@@ -68,3 +68,8 @@ The request window in `get_consumption` is still built from naive local `datetim
 values, which is what the API expects, since it speaks the same local clock. That is
 consistent but only by coincidence on a host running Europe/Lisbon; the window is
 padded by `REFETCH_BUFFER_DAYS`, so an hour of skew at the edges changes nothing.
+
+**Update (v2.0.0):** the request window is no longer built from the host's naive
+`datetime.now()`. The sync converts its UTC "now" and last stored hour to Europe/Lisbon
+wall clock explicitly (`planning.utc_to_lisbon_naive`), so it no longer depends on the
+host's timezone. The parse-time conversion and the `fold` handling are unchanged.

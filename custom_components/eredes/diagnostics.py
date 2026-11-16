@@ -1,70 +1,53 @@
-"""Diagnostics support for E-REDES integration."""
+"""Diagnostics support for E-REDES integration.
+
+A config entry holds only the CPE, and it is redacted. There is no token to
+redact: it is never stored (docs/adr/0005). Legacy token keys stay in the
+redaction set as a belt-and-braces guard.
+"""
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 from homeassistant.components.diagnostics import async_redact_data
-from homeassistant.const import CONF_PASSWORD, CONF_USERNAME
+from homeassistant.components.recorder import get_instance  # type: ignore[attr-defined]
+from homeassistant.components.recorder.statistics import get_last_statistics
 
-from .const import CONF_ACCESS_TOKEN
+from .const import CONF_CPE, LEGACY_TOKEN_KEYS
+from .sync import statistic_id
 
 if TYPE_CHECKING:
     from homeassistant.core import HomeAssistant
 
     from . import ERedesConfigEntry
 
-# async_redact_data matches keys exactly, so the actual config key must be
-# listed. The legacy keys are kept so diagnostics from un-migrated entries
-# are still redacted.
-TO_REDACT = {
-    CONF_PASSWORD,
-    CONF_USERNAME,
-    CONF_ACCESS_TOKEN,
-    "session_cookie",
-    "aat_token",
-    "aat",
-    "session",
-    "token",
-    "nif",
-    "nif_requester",
-}
+TO_REDACT = {CONF_CPE, "aat", "token", "nif", "nif_requester", *LEGACY_TOKEN_KEYS}
 
 
 async def async_get_config_entry_diagnostics(
-    _hass: HomeAssistant,
+    hass: HomeAssistant,
     entry: ERedesConfigEntry,
 ) -> dict[str, Any]:
     """Return diagnostics for a config entry."""
-    coordinator = entry.runtime_data.coordinator
-
-    diagnostics_data: dict[str, Any] = {
-        "entry": {
-            "title": entry.title,
-            "data": async_redact_data(dict(entry.data), TO_REDACT),
-        },
-        "coordinator": {
-            "last_update_success": coordinator.last_update_success,
-            "update_interval": str(coordinator.update_interval),
-        },
-    }
-
-    if coordinator.data is not None:
-        diagnostics_data["data"] = {
-            "today_kwh": coordinator.data.today_kwh,
-            "current_power_w": coordinator.data.current_power_w,
-            "last_update": coordinator.data.last_update.isoformat(),
-            "readings_count": (
-                len(coordinator.data.consumption.readings)
-                if coordinator.data.consumption
-                else 0
-            ),
+    stat_id = statistic_id(entry.data[CONF_CPE])
+    rows = await get_instance(hass).async_add_executor_job(
+        get_last_statistics, hass, 1, stat_id, True, {"sum", "state"}
+    )
+    last: dict[str, Any] | None = None
+    if rows and rows.get(stat_id):
+        row = rows[stat_id][0]
+        last = {
+            "start": datetime.fromtimestamp(row["start"], tz=UTC).isoformat(),
+            "sum": row.get("sum"),
+            "state": row.get("state"),
         }
 
-        if coordinator.data.last_reading:
-            diagnostics_data["data"]["last_reading"] = {
-                "timestamp": coordinator.data.last_reading.timestamp.isoformat(),
-                "value_kwh": coordinator.data.last_reading.value_kwh,
-            }
-
-    return diagnostics_data
+    return {
+        "entry": {
+            "title": entry.title,
+            "version": entry.version,
+            "data": async_redact_data(dict(entry.data), TO_REDACT),
+        },
+        "statistic": {"statistic_id": stat_id, "last": last},
+    }

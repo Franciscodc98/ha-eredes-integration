@@ -2,62 +2,129 @@
   "config": {
     "step": {
       "user": {
-        "title": "E-REDES Account",
-        "description": "Enter your E-REDES Balcao Digital access token and CPE code.\n\nTo get your access token:\n1. Log into {setup_url}\n2. Open browser dev tools (F12)\n3. Go to Application > Cookies > {setup_url}\n4. Copy the value of the 'aat' cookie",
+        "title": "E-REDES delivery point",
+        "description": "Enter the CPE of the delivery point to import from {setup_url}.\n\nNo token is stored. To import consumption, open this entry's options (\"Sync now\") or call the `eredes.sync` action with a freshly pasted token.",
         "data": {
-          "access_token": "Access Token (aat)",
-          "cpe": "CPE Code"
+          "cpe": "CPE code"
         },
         "data_description": {
-          "access_token": "The value of the 'aat' cookie from your browser. The full Cookie header is also accepted.",
-          "cpe": "Your electricity meter CPE code (e.g., PT0002000012345678XX)"
-        }
-      },
-      "reauth_confirm": {
-        "title": "Re-authenticate with E-REDES",
-        "description": "Your E-REDES access token has expired. Please enter a new one for CPE {cpe}.\n\nTo get your access token:\n1. Log into {setup_url}\n2. Open browser dev tools (F12)\n3. Go to Application > Cookies > {setup_url}\n4. Copy the value of the 'aat' cookie",
-        "data": {
-          "access_token": "Access Token (aat)"
-        }
-      },
-      "reconfigure": {
-        "title": "Reconfigure E-REDES",
-        "description": "Update your E-REDES configuration.",
-        "data": {
-          "access_token": "Access Token (aat)",
-          "cpe": "CPE Code"
+          "cpe": "Your delivery point code, e.g. PT0002000012345678XX."
         }
       }
     },
     "error": {
-      "invalid_auth": "Invalid or expired access token",
-      "cannot_connect": "Cannot connect to E-REDES",
-      "unknown": "An unexpected error occurred"
+      "invalid_cpe": "That does not look like a CPE (PT followed by 18 letters or digits)."
     },
     "abort": {
-      "already_configured": "This CPE is already configured",
-      "reauth_successful": "Re-authentication successful",
-      "reconfigure_successful": "Reconfiguration successful"
+      "already_configured": "This CPE is already configured"
     }
   },
   "options": {
     "step": {
       "init": {
-        "title": "E-REDES Options"
+        "title": "Sync now",
+        "description": "Paste a fresh access token to import the consumption that is missing from the Energy dashboard. The token is used for this sync only and is never stored.\n\nTo get it: log into {setup_url}, open the browser dev tools (F12), go to Application > Cookies and copy the value of the 'aat' cookie. The token expires a short while after login, so sync right away.",
+        "data": {
+          "token": "Access token (aat)",
+          "dry_run": "Dry run",
+          "history_days": "History days"
+        },
+        "data_description": {
+          "token": "The 'aat' cookie value, 'aat=…', or the full Cookie header.",
+          "dry_run": "Fetch and compute everything, but write nothing.",
+          "history_days": "How far back the first import goes. Ignored once statistics exist."
+        }
       }
     },
+    "error": {
+      "token_expired": "E-REDES refused the token (401). It has expired: log in again and paste a fresh one.",
+      "captcha_challenge": "E-REDES answered with a reCAPTCHA challenge (403). This is not a token problem; nothing was written. Try again later.",
+      "access_denied": "E-REDES denied access (403). Check that the CPE belongs to the account that issued the token.",
+      "http_error": "E-REDES answered with HTTP status {status}. Nothing was written.",
+      "http_error_first_block": "E-REDES answered with HTTP status {status} for the oldest part of the window. Nothing was written. If your contract is recent, try fewer history days.",
+      "cannot_connect": "Could not reach E-REDES. Nothing was written.",
+      "unexpected_response": "E-REDES returned a response that could not be understood. Nothing was written.",
+      "unsuccessful_after_data": "E-REDES reported a failure for request block {block}, after earlier blocks had returned data. Nothing was written.",
+      "empty_block_between_data": "Request block {block} came back empty between blocks with data. Nothing was written, to avoid importing a hole.",
+      "no_successful_response": "E-REDES did not return a successful response for any part of the window. Check the CPE and the history days.",
+      "sync_in_progress": "A sync for this CPE is already running.",
+      "token_missing": "No access token found in the pasted value.",
+      "unknown": "An unexpected error occurred."
+    },
     "abort": {
-      "no_options": "No options available for this integration"
+      "sync_complete": "Sync complete: {hours_written} hour(s) written, {kwh_added} kWh added, total {final_sum_kwh} kWh.\n\nReadings fetched: {readings_fetched} ({first_reading} → {last_reading}).\nIncomplete interior hours: {incomplete_interior_hours}. Missing hours: {missing_hours}.\nPartial final hour dropped: {dropped_partial_final_hour}. Last stored hour reopened: {reopened_last_hour}.",
+      "dry_run_complete": "Dry run, nothing written: {hours_written} hour(s) would be written, {kwh_added} kWh added, total {final_sum_kwh} kWh.\n\nReadings fetched: {readings_fetched} ({first_reading} → {last_reading}).\nIncomplete interior hours: {incomplete_interior_hours}. Missing hours: {missing_hours}.\nPartial final hour dropped: {dropped_partial_final_hour}. Last stored hour reopened: {reopened_last_hour}."
     }
   },
-  "entity": {
-    "sensor": {
-      "energy": {
-        "name": "Daily Energy"
-      },
-      "power": {
-        "name": "Power"
+  "services": {
+    "sync": {
+      "name": "Sync consumption",
+      "description": "Imports the consumption missing from the E-REDES long-term statistic, using a freshly pasted access token. Warning: Home Assistant records action data, including this token, in its database; the entry's \"Sync now\" option does not.",
+      "fields": {
+        "token": {
+          "name": "Access token",
+          "description": "The 'aat' cookie value, 'aat=…', or the full Cookie header. Used for this call only."
+        },
+        "cpe": {
+          "name": "CPE",
+          "description": "The configured CPE to sync. Optional when only one is configured."
+        },
+        "dry_run": {
+          "name": "Dry run",
+          "description": "Fetch and compute everything, but write nothing."
+        },
+        "history_days": {
+          "name": "History days",
+          "description": "How far back the first import goes. Ignored once statistics exist."
+        }
       }
+    }
+  },
+  "exceptions": {
+    "token_expired": {
+      "message": "E-REDES refused the token (401). It has expired: log in again and paste a fresh one."
+    },
+    "captcha_challenge": {
+      "message": "E-REDES answered with a reCAPTCHA challenge (403). This is not a token problem; nothing was written. Try again later."
+    },
+    "access_denied": {
+      "message": "E-REDES denied access (403). Check that the CPE belongs to the account that issued the token."
+    },
+    "http_error": {
+      "message": "E-REDES answered with HTTP status {status}. Nothing was written."
+    },
+    "http_error_first_block": {
+      "message": "E-REDES answered with HTTP status {status} for the oldest part of the window. Nothing was written. If your contract is recent, try a smaller history_days."
+    },
+    "cannot_connect": {
+      "message": "Could not reach E-REDES. Nothing was written."
+    },
+    "unexpected_response": {
+      "message": "E-REDES returned a response that could not be understood. Nothing was written."
+    },
+    "unsuccessful_after_data": {
+      "message": "E-REDES reported a failure for request block {block}, after earlier blocks had returned data. Nothing was written."
+    },
+    "empty_block_between_data": {
+      "message": "Request block {block} came back empty between blocks with data. Nothing was written, to avoid importing a hole."
+    },
+    "no_successful_response": {
+      "message": "E-REDES did not return a successful response for any part of the window. Check the CPE and history_days."
+    },
+    "sync_in_progress": {
+      "message": "A sync for this CPE is already running."
+    },
+    "token_missing": {
+      "message": "No access token found in the pasted value."
+    },
+    "cpe_not_configured": {
+      "message": "No loaded E-REDES entry has that CPE."
+    },
+    "cpe_required": {
+      "message": "Several CPEs are configured: specify which one to sync."
+    },
+    "no_entries": {
+      "message": "No E-REDES entry is configured and loaded."
     }
   }
 }

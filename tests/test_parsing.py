@@ -12,6 +12,10 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from custom_components.eredes.eredes_api import (
+    ERedesUnexpectedResponseError,
+    ERedesUnsuccessfulResponseError,
+)
 from custom_components.eredes.eredes_api.client import ERedesClient
 
 START = datetime(2026, 1, 1)
@@ -268,11 +272,36 @@ def test_readings_are_sorted_by_timestamp() -> None:
 # --- envelope ----------------------------------------------------------------
 
 
-def test_unsuccessful_response_yields_no_readings() -> None:
-    """``Success: false`` is not parsed for data."""
-    assert _parse(_response([_curve()], success=False)) == []
+def test_unsuccessful_response_raises() -> None:
+    """``Success: false`` raises instead of passing for an empty series."""
+    with pytest.raises(ERedesUnsuccessfulResponseError):
+        _parse(_response([_curve()], success=False))
 
 
 def test_empty_result_yields_no_readings() -> None:
     """A response with no devices parses to an empty series."""
     assert _parse({"Body": {"Success": True, "Result": {}}}) == []
+
+
+@pytest.mark.parametrize(
+    "response",
+    [
+        pytest.param({}, id="no-body"),
+        pytest.param([], id="not-an-object"),
+        pytest.param({"Body": "oops"}, id="body-not-an-object"),
+        pytest.param(
+            {"Body": {"Success": True, "Result": {"utilitiesDevices": "x"}}},
+            id="devices-not-a-list",
+        ),
+    ],
+)
+def test_malformed_envelope_raises(response: Any) -> None:
+    """A structural surprise raises rather than returning a partial series."""
+    with pytest.raises(ERedesUnexpectedResponseError):
+        _parse(response)
+
+
+def test_non_numeric_value_raises() -> None:
+    """A value that is not a number aborts instead of truncating the series."""
+    with pytest.raises(ERedesUnexpectedResponseError):
+        _parse(_response([_curve(), _curve("2026-01-05T00:30:00Z", "n/a")]))  # type: ignore[arg-type]

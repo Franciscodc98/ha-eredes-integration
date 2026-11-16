@@ -1,4 +1,11 @@
-"""Config flow for E-REDES integration."""
+"""Config and "Sync now" flows for the E-REDES integration.
+
+The config flow asks for the CPE only; no token is ever stored. The options
+flow is repurposed as a "Sync now" form: it takes a freshly pasted token, runs
+the same sync as the ``eredes.sync`` action and shows the summary. Unlike an
+action call, flow input is not fired as a ``call_service`` event, so the token
+does not end up in the recorder database (docs/adr/0005).
+"""
 
 from __future__ import annotations
 
@@ -13,29 +20,53 @@ from homeassistant.config_entries import (
     OptionsFlow,
 )
 from homeassistant.core import callback
-from homeassistant.helpers.aiohttp_client import async_get_clientsession
+from homeassistant.exceptions import HomeAssistantError
+from homeassistant.helpers.selector import (
+    BooleanSelector,
+    NumberSelector,
+    NumberSelectorConfig,
+    NumberSelectorMode,
+    TextSelector,
+    TextSelectorConfig,
+    TextSelectorType,
+)
 
-from .const import BASE_URL, CONF_ACCESS_TOKEN, CONF_CPE, DOMAIN
-from .eredes_api import ERedesAuthenticationError, ERedesClient, ERedesConnectionError
+from .const import (
+    ATTR_DRY_RUN,
+    ATTR_HISTORY_DAYS,
+    ATTR_TOKEN,
+    BASE_URL,
+    CONF_CPE,
+    CPE_PATTERN,
+    DOMAIN,
+    normalize_cpe,
+)
+from .sync import DEFAULT_HISTORY_DAYS, MAX_HISTORY_DAYS, async_sync
 
 _LOGGER = logging.getLogger(__name__)
 
-STEP_USER_DATA_SCHEMA = vol.Schema(
+STEP_USER_DATA_SCHEMA = vol.Schema({vol.Required(CONF_CPE): str})
+
+SYNC_DATA_SCHEMA = vol.Schema(
     {
-        vol.Required(CONF_ACCESS_TOKEN): str,
-        vol.Required(CONF_CPE): str,
+        vol.Required(ATTR_TOKEN): TextSelector(
+            TextSelectorConfig(type=TextSelectorType.PASSWORD)
+        ),
+        vol.Optional(ATTR_DRY_RUN, default=False): BooleanSelector(),
+        vol.Optional(ATTR_HISTORY_DAYS, default=DEFAULT_HISTORY_DAYS): NumberSelector(
+            NumberSelectorConfig(
+                min=1, max=MAX_HISTORY_DAYS, step=1, mode=NumberSelectorMode.BOX
+            )
+        ),
     }
 )
 
 
 class ERedesConfigFlow(ConfigFlow, domain=DOMAIN):
-    """Handle a config flow for E-REDES."""
+    """Add a CPE. Nothing is fetched here, so no token is asked for."""
 
-    VERSION = 2
-
-    def __init__(self) -> None:
-        """Initialize the config flow."""
-        self._reauth_entry: ConfigEntry | None = None
+    VERSION = 3
+    MINOR_VERSION = 1
 
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
@@ -44,21 +75,15 @@ class ERedesConfigFlow(ConfigFlow, domain=DOMAIN):
         errors: dict[str, str] = {}
 
         if user_input is not None:
-            # Check for existing entry with same CPE
-            await self.async_set_unique_id(user_input[CONF_CPE])
-            self._abort_if_unique_id_configured()
-
-            # Test the credentials
-            error = await self._test_credentials(
-                user_input[CONF_ACCESS_TOKEN], user_input[CONF_CPE]
-            )
-
-            if error:
-                errors["base"] = error
+            cpe = normalize_cpe(user_input[CONF_CPE])
+            if not CPE_PATTERN.match(cpe):
+                errors[CONF_CPE] = "invalid_cpe"
             else:
+                await self.async_set_unique_id(cpe)
+                self._abort_if_unique_id_configured()
                 return self.async_create_entry(
-                    title=f"E-REDES ({user_input[CONF_CPE][-8:]})",
-                    data=user_input,
+                    title=f"E-REDES ({cpe[-8:]})",
+                    data={CONF_CPE: cpe},
                 )
 
         return self.async_show_form(
@@ -68,136 +93,56 @@ class ERedesConfigFlow(ConfigFlow, domain=DOMAIN):
             description_placeholders={"setup_url": BASE_URL},
         )
 
-    async def async_step_reauth(self, _entry_data: dict[str, Any]) -> ConfigFlowResult:
-        """Handle reauthorization request."""
-        self._reauth_entry = self.hass.config_entries.async_get_entry(
-            self.context["entry_id"]
-        )
-        return await self.async_step_reauth_confirm()
-
-    async def async_step_reauth_confirm(
-        self, user_input: dict[str, Any] | None = None
-    ) -> ConfigFlowResult:
-        """Handle reauth confirmation."""
-        errors: dict[str, str] = {}
-
-        if user_input is not None:
-            assert self._reauth_entry is not None
-
-            error = await self._test_credentials(
-                user_input[CONF_ACCESS_TOKEN], self._reauth_entry.data[CONF_CPE]
-            )
-
-            if error:
-                errors["base"] = error
-            else:
-                # Update the config entry with the new access token
-                self.hass.config_entries.async_update_entry(
-                    self._reauth_entry,
-                    data={
-                        **self._reauth_entry.data,
-                        CONF_ACCESS_TOKEN: user_input[CONF_ACCESS_TOKEN],
-                    },
-                )
-                await self.hass.config_entries.async_reload(self._reauth_entry.entry_id)
-                return self.async_abort(reason="reauth_successful")
-
-        return self.async_show_form(
-            step_id="reauth_confirm",
-            data_schema=vol.Schema(
-                {
-                    vol.Required(CONF_ACCESS_TOKEN): str,
-                }
-            ),
-            errors=errors,
-            description_placeholders={
-                "cpe": self._reauth_entry.data[CONF_CPE] if self._reauth_entry else "",
-                "setup_url": BASE_URL,
-            },
-        )
-
-    async def async_step_reconfigure(
-        self, user_input: dict[str, Any] | None = None
-    ) -> ConfigFlowResult:
-        """Handle reconfiguration."""
-        errors: dict[str, str] = {}
-        entry = self.hass.config_entries.async_get_entry(self.context["entry_id"])
-
-        if user_input is not None:
-            assert entry is not None
-
-            # If CPE changed, check for duplicates
-            if user_input[CONF_CPE] != entry.data[CONF_CPE]:
-                await self.async_set_unique_id(user_input[CONF_CPE])
-                self._abort_if_unique_id_configured()
-
-            # Test credentials
-            error = await self._test_credentials(
-                user_input[CONF_ACCESS_TOKEN], user_input[CONF_CPE]
-            )
-
-            if error:
-                errors["base"] = error
-            else:
-                self.hass.config_entries.async_update_entry(
-                    entry,
-                    title=f"E-REDES ({user_input[CONF_CPE][-8:]})",
-                    data=user_input,
-                )
-                await self.hass.config_entries.async_reload(entry.entry_id)
-                return self.async_abort(reason="reconfigure_successful")
-
-        return self.async_show_form(
-            step_id="reconfigure",
-            data_schema=vol.Schema(
-                {
-                    vol.Required(
-                        CONF_ACCESS_TOKEN,
-                        default=entry.data.get(CONF_ACCESS_TOKEN) if entry else "",
-                    ): str,
-                    vol.Required(
-                        CONF_CPE,
-                        default=entry.data.get(CONF_CPE) if entry else "",
-                    ): str,
-                }
-            ),
-            errors=errors,
-        )
-
-    async def _test_credentials(self, access_token: str, cpe: str) -> str | None:
-        """Test if the credentials are valid.
-
-        Returns an error key if validation fails, None if successful.
-        """
-        session = async_get_clientsession(self.hass)
-        client = ERedesClient(session, access_token)
-
-        try:
-            valid = await client.validate_token(cpe)
-            if not valid:
-                return "invalid_auth"
-            return None
-        except ERedesAuthenticationError:
-            return "invalid_auth"
-        except ERedesConnectionError:
-            return "cannot_connect"
-        except Exception:
-            _LOGGER.exception("Unexpected error during token validation")
-            return "unknown"
-
     @staticmethod
     @callback
     def async_get_options_flow(_config_entry: ConfigEntry) -> OptionsFlow:
-        """Get the options flow for this handler."""
-        return ERedesOptionsFlow()
+        """Return the "Sync now" flow."""
+        return ERedesSyncFlow()
 
 
-class ERedesOptionsFlow(OptionsFlow):
-    """Handle E-REDES options."""
+class ERedesSyncFlow(OptionsFlow):
+    """Run a sync from the UI. Stores nothing in the entry's options."""
 
     async def async_step_init(
-        self, _user_input: dict[str, Any] | None = None
+        self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
-        """Manage the options."""
-        # Currently no options, but this allows future expansion
-        return self.async_abort(reason="no_options")
+        """Ask for the token and sync options, then sync."""
+        errors: dict[str, str] = {}
+        placeholders: dict[str, str] = {
+            "setup_url": BASE_URL,
+            "status": "",
+            "block": "",
+        }
+
+        if user_input is not None:
+            try:
+                result = await async_sync(
+                    self.hass,
+                    self.config_entry.data[CONF_CPE],
+                    user_input[ATTR_TOKEN],
+                    dry_run=bool(user_input.get(ATTR_DRY_RUN, False)),
+                    history_days=int(
+                        user_input.get(ATTR_HISTORY_DAYS, DEFAULT_HISTORY_DAYS)
+                    ),
+                )
+            except HomeAssistantError as err:
+                errors["base"] = err.translation_key or "unknown"
+                placeholders.update(err.translation_placeholders or {})
+            else:
+                response = result.as_response()
+                return self.async_abort(
+                    reason="dry_run_complete" if result.dry_run else "sync_complete",
+                    description_placeholders={
+                        key: "" if value is None else str(value)
+                        for key, value in response.items()
+                        if not isinstance(value, list)
+                    },
+                )
+
+        # Never echo the token back into the form.
+        return self.async_show_form(
+            step_id="init",
+            data_schema=SYNC_DATA_SCHEMA,
+            errors=errors,
+            description_placeholders=placeholders,
+        )

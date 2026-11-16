@@ -1,13 +1,13 @@
 {
   "domain": "eredes",
   "name": "E-REDES",
-  "after_dependencies": ["recorder"],
-  "codeowners": ["@mrfyda"],
+  "codeowners": ["@Franciscodc98"],
   "config_flow": true,
-  "documentation": "https://github.com/mrfyda/ha-eredes",
+  "dependencies": ["recorder"],
+  "documentation": "https://github.com/Franciscodc98/ha-eredes-integration",
   "integration_type": "hub",
   "iot_class": "cloud_polling",
-  "issue_tracker": "https://github.com/mrfyda/ha-eredes/issues",
+  "issue_tracker": "https://github.com/Franciscodc98/ha-eredes-integration/issues",
   "requirements": [],
-  "version": "1.0.0"
+  "version": "2.0.0"
 }

@@ -1,142 +1,164 @@
-# E-REDES Integration for Home Assistant
+# E-REDES Manual Sync for Home Assistant
 
-[![Validate](https://github.com/mrfyda/ha-eredes/actions/workflows/validate.yml/badge.svg)](https://github.com/mrfyda/ha-eredes/actions/workflows/validate.yml)
-[![Tests](https://github.com/mrfyda/ha-eredes/actions/workflows/tests.yml/badge.svg)](https://github.com/mrfyda/ha-eredes/actions/workflows/tests.yml)
-[![HACS](https://img.shields.io/badge/HACS-Custom-orange.svg)](https://github.com/hacs/integration)
+A Home Assistant custom integration that imports electricity consumption from the
+[E-REDES Balcão Digital](https://balcaodigital.e-redes.pt) portal (the Portuguese
+distribution network operator) into Home Assistant's long-term statistics, for the
+**Energy dashboard**.
 
-A Home Assistant custom integration to fetch energy consumption data from [E-REDES](https://balcaodigital.e-redes.pt) (Portuguese electricity distribution network operator).
+This is a fork of [mrfyda/ha-eredes](https://github.com/mrfyda/ha-eredes) by
+[@mrfyda](https://github.com/mrfyda) (MIT), reworked into a **manual sync**: no polling
+and no sensors. You paste a fresh token when you want to catch up, and the integration
+imports exactly the range that is missing.
 
-## Features
+## Why manual
 
-- Fetches 15-minute interval energy consumption data
-- Imports up to 1 year of historical data
-- Compatible with Home Assistant's Energy Dashboard
-- Automatic re-authentication flow when token expires
-- Multi-language support (English, Portuguese)
+E-REDES login is protected by reCAPTCHA, so the access token (`aat`) has to be copied
+from the browser by hand. That token was measured to expire about **91 minutes** after
+login and cannot be renewed (see [docs/adr/0001](docs/adr/0001-manual-token-paste-auth.md)).
+An hourly-polling integration is therefore guaranteed to break about two hours after
+every paste. Since E-REDES publishes consumption with a ~24h delay anyway, a one-shot
+sync per paste loses nothing.
 
-## Sensors
+## How it works
 
-The integration creates one device per meter (`E-REDES Meter <CPE suffix>`) with two
-entities. Entity IDs are derived from the device name, e.g. for a meter whose CPE ends
-in `...MY`:
-
-| Sensor | Example entity ID | Description | Unit |
-|--------|-------------------|-------------|------|
-| Daily Energy | `sensor.e_redes_meter_my_daily_energy` | Total consumption for the most recent complete day. Because E-REDES publishes data with a ~24h delay, this reflects **yesterday's** total. This entity also carries the imported long-term statistics used by the Energy Dashboard. | kWh |
-| Power | `sensor.e_redes_meter_my_power` | Average power over the most recent 15-minute interval (derived from that interval's energy). | W |
+- The first sync imports the available history (365 days by default, or less if the
+  contract is more recent).
+- Each later sync re-reads from two days before the last stored hour and appends only
+  the hours that are missing. Running it twice in a row adds nothing.
+- Everything is fetched first, in 31-day blocks, and written in a single step. If
+  anything fails (expired token, captcha challenge, network error, unexpected
+  response), **nothing is written** and you get a clear error.
+- The newest hour is dropped if E-REDES has not published all four quarter-hours yet;
+  the next sync picks it up whole. Incomplete hours inside the series are imported but
+  reported.
 
 ## Installation
 
-### HACS (Recommended)
+### HACS
 
 1. Open HACS in Home Assistant
 2. Click the three dots menu and select "Custom repositories"
-3. Add `https://github.com/mrfyda/ha-eredes` with category "Integration"
+3. Add `https://github.com/Franciscodc98/ha-eredes-integration` with category "Integration"
 4. Click "Install"
 5. Restart Home Assistant
 
-### Manual Installation
+### Manual
 
-1. Download the latest release from GitHub
-2. Copy `custom_components/eredes` to your Home Assistant `config/custom_components/` directory
-3. Restart Home Assistant
+1. Copy `custom_components/eredes` to your Home Assistant `config/custom_components/` directory
+2. Restart Home Assistant
 
 ## Configuration
 
-This integration requires a session token from the E-REDES portal. Due to CAPTCHA protection on the login page, automatic authentication is not possible.
+1. Go to **Settings** > **Devices & Services** > **Add Integration** > "E-REDES"
+2. Enter your **CPE** (e.g. `PT0002000012345678AB`)
 
-### Getting Your Token
+Only the CPE is stored. No token is ever saved.
+
+Upgrading from the polling version (1.x) migrates the entry automatically: the stored
+token is deleted, the old Daily Energy / Power sensors and their device are removed, and
+the `eredes:energy_…` statistic is kept, so the next sync continues it.
+
+## Syncing
+
+### Getting a token
 
 1. Log into [balcaodigital.e-redes.pt](https://balcaodigital.e-redes.pt) in your browser
-2. Open browser developer tools (F12)
+2. Open the developer tools (F12)
 3. Go to **Application** > **Cookies** > `https://balcaodigital.e-redes.pt`
-4. Copy the value of the `aat` cookie
+4. Copy the value of the `aat` cookie (a bare value, `aat=…` or the full Cookie header
+   all work)
 
-### Adding the Integration
+Sync right away: the token expires shortly after login.
 
-1. Go to **Settings** > **Devices & Services**
-2. Click **Add Integration**
-3. Search for "E-REDES"
-4. Enter your configuration:
-   - **Access Token (aat)**: The value of the `aat` cookie from your browser (the full Cookie header is also accepted)
-   - **CPE Code**: Your electricity meter CPE code (e.g., `PT0002000012345678AB`)
+### Option A — "Sync now" form (recommended)
 
-### Token Expiration
+**Settings** > **Devices & Services** > **E-REDES** > **Configure**. Paste the token,
+optionally tick **Dry run**, and submit. The summary shows what was imported.
 
-The token will expire after some time (typically when you log out or after extended inactivity). When this happens:
+### Option B — the `eredes.sync` action
 
-1. Home Assistant will show a re-authentication notification
-2. Log into the E-REDES portal again
-3. Copy the new `aat` cookie value
-4. Enter it in the re-authentication form
+```yaml
+action: eredes.sync
+data:
+  token: "eyJ..."
+  # cpe: PT0002000012345678AB   # only needed with several CPEs configured
+  # dry_run: true               # fetch and compute, write nothing
+  # history_days: 365           # first import only
+```
+
+> **Warning.** Home Assistant itself records the data of every action call — including
+> this token — as a `call_service` event in its database, and logs it when debug logging
+> is enabled. The "Sync now" form does not have this problem. If you use the action, add
+> this to `configuration.yaml`:
+>
+> ```yaml
+> recorder:
+>   exclude:
+>     event_types:
+>       - call_service
+> ```
+>
+> The token stops working ~91 minutes after login, but it should not be stored at all.
+
+The action returns a response (use **Developer tools** > **Actions** to see it):
+
+| Field | Meaning |
+|---|---|
+| `readings_fetched`, `first_reading`, `last_reading` | 15-minute readings received |
+| `hours_written`, `first_hour_written`, `last_hour_written` | Hours written (or, in a dry run, that would be written) |
+| `kwh_added`, `final_sum_kwh` | Energy appended and the cumulative total afterwards |
+| `incomplete_interior_hours`, `incomplete_interior_hour_starts` | Imported hours with fewer than 4 readings |
+| `missing_hours` | Hours with no reading at all between imported hours |
+| `dropped_partial_final_hour`, `dropped_partial_final_hour_start` | Whether the newest, still-incomplete hour was left for later |
+| `reopened_last_hour` | Whether a partial last hour left by version 1.x was completed |
+| `dry_run`, `window_start`, `window_end`, `blocks_requested`, `statistic_id` | What was asked for |
+
+### Errors
+
+| Error | Meaning |
+|---|---|
+| Token refused (401) | The token expired. Log in again and paste a fresh one. |
+| reCAPTCHA challenge (403) | E-REDES wants a captcha solved. This is **not** a token problem; try later. |
+| HTTP error on the oldest block | Possibly a range before your contract start; try a smaller `history_days`. |
+| Others | Network or unexpected response. Nothing was written; just run it again. |
 
 ## Energy Dashboard Setup
 
-On first setup the integration imports up to a year of historical consumption into a
-Home Assistant long-term statistic named **E-REDES Energy (`<CPE suffix>`)**
-(id `eredes:energy_<cpe suffix>`). On later restarts it resumes from the last imported
-hour rather than re-importing the whole year. Add that statistic to your Energy
-Dashboard:
+The data lands in the long-term statistic **E-REDES Energy (`<CPE suffix>`)**
+(id `eredes:energy_<cpe suffix>`):
 
 1. Go to **Settings** > **Dashboards** > **Energy**
 2. Under "Grid consumption", click **Add consumption**
 3. Select **E-REDES Energy (`<CPE suffix>`)**
 
-> The **Daily Energy** sensor is a live, at-a-glance entity for yesterday's total; the
-> hourly history that feeds the Energy Dashboard is the `eredes:energy_…` statistic
-> above.
-
 ## Known Limitations
 
 | Limitation | Description |
 |------------|-------------|
-| Manual token | Due to CAPTCHA, tokens must be obtained manually from browser |
-| Token expiry | Token expires and requires periodic manual refresh |
-| Data delay | E-REDES publishes consumption with roughly a 24h delay, so sensors reflect the previous day rather than real-time |
-| Resolution | Data is provided in 15-minute intervals only |
-| Real-time | For real-time monitoring, use a dedicated energy monitor (e.g., Shelly) |
-
-## Troubleshooting
-
-### Invalid Token Error
-
-If you see a token error:
-
-1. Obtain a fresh token by logging into [balcaodigital.e-redes.pt](https://balcaodigital.e-redes.pt)
-2. Copy the new `aat` cookie value
-3. Reconfigure or re-authenticate the integration
-
-### No Data
-
-If sensors show "Unknown" or no data:
-
-1. E-REDES publishes data with a ~24h delay, so the most recent full day may take up to a day to appear
-2. Check the integration logs for errors
-3. Verify your CPE code is correct
+| Manual token | Due to reCAPTCHA, tokens must be copied from the browser |
+| Data delay | E-REDES publishes consumption with roughly a 24h delay |
+| Append-only | Hours already imported are not re-pulled if E-REDES corrects them later |
+| Resolution | 15-minute data, imported as hourly statistics |
+| Import only | Only the `A+` register (consumption); no injection/solar export |
 
 ## Development
 
 ```bash
-# Clone the repository
-git clone https://github.com/mrfyda/ha-eredes.git
-cd ha-eredes
-
-# Install development dependencies (using uv)
-uv venv
+python -m venv .venv
 source .venv/bin/activate
-uv pip install -r requirements_test.txt
+pip install -r requirements_test.txt
 
-# Run tests
 pytest tests/ -v
-
-# Run linting
 ruff check .
 mypy custom_components/eredes --strict
 ```
 
+Home Assistant does not run natively on Windows; use WSL or Linux for the tests.
+
 ## License
 
-MIT License - see [LICENSE](LICENSE) for details.
+MIT License - see [LICENSE](LICENSE) for details. Original work by
+[@mrfyda](https://github.com/mrfyda/ha-eredes).
 
 ## Disclaimer
 

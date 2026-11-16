@@ -89,3 +89,7 @@ publishes consumption with a ~24h delay, the token is best treated as a **one-sh
 credential**: on each paste, backfill everything since the last import, then stop
 expecting scheduled polls to succeed. The README must not imply that re-authentication
 is automatic.
+
+**Update (v2.0.0):** implemented as a manual sync with no polling and no stored token —
+see [0005](0005-manual-sync-replaces-polling.md). The reauth flow mentioned above no
+longer exists.

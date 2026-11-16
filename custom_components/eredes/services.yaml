@@ -1,0 +1,27 @@
+sync:
+  fields:
+    token:
+      required: true
+      selector:
+        text:
+          type: password
+    cpe:
+      required: false
+      example: PT0002000012345678AB
+      selector:
+        text:
+    dry_run:
+      required: false
+      default: false
+      selector:
+        boolean:
+    history_days:
+      required: false
+      default: 365
+      selector:
+        number:
+          min: 1
+          max: 1095
+          step: 1
+          mode: box
+          unit_of_measurement: days

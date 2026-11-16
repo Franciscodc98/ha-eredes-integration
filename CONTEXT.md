@@ -1,9 +1,10 @@
 # E-REDES Integration
 
-A Home Assistant custom integration that fetches electricity consumption from the
-E-REDES Balcão Digital portal. This glossary fixes the vocabulary of two areas that
-are easy to confuse: the **metering domain** (what the data represents) and the
-**authentication model** (how requests are credentialed).
+A Home Assistant custom integration that imports electricity consumption from the
+E-REDES Balcão Digital portal into long-term statistics, by manual **sync**. This
+glossary fixes the vocabulary of two areas that are easy to confuse: the **metering
+domain** (what the data represents) and the **authentication model** (how requests are
+credentialed).
 
 ## Metering
 
@@ -73,6 +74,20 @@ sliding window). It rides along with requests and is bootstrapped even from a
 bare-`aat` first call, but it is not a credential — keeping it fresh does not extend
 access past the access token's expiry.
 _Avoid_: bare "session" (collides with the aiohttp HTTP client session).
+
+**Sync**:
+One on-demand import: a freshly pasted **access token** is used for a single run that
+fetches the missing range in request blocks and appends it to the
+`eredes:energy_<cpe suffix>` statistic, all or nothing. The token is never stored.
+See `docs/adr/0005`.
+_Avoid_: "poll", "refresh", "update" (there is no schedule).
+
+**Request block**:
+One `edm/get` call covering at most 31 days of the sync window.
+
+**Partial hour**:
+A UTC hour with fewer than four readings. The newest partial hour is left for the next
+sync; earlier ones are imported and reported as *incomplete interior hours*.
 
 **Login**:
 The interactive, browser-based sign-in that mints an `aat`. Protected by Google

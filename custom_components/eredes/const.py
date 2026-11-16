@@ -1,26 +1,32 @@
 """Constants for the E-REDES integration."""
 
+import re
 from typing import Final
 
 DOMAIN: Final = "eredes"
 
-# Configuration keys
+# Configuration keys. A config entry stores the CPE and nothing else.
 CONF_CPE: Final = "cpe"
-CONF_ACCESS_TOKEN: Final = "access_token"
 
-# Legacy config keys migrated to CONF_ACCESS_TOKEN (see async_migrate_entry)
-LEGACY_TOKEN_KEYS: Final = ("session_cookie", "aat_token")
+# Keys under which earlier versions stored the access token. Migration to
+# version 3 deletes all of them (see async_migrate_entry).
+LEGACY_TOKEN_KEYS: Final = ("access_token", "session_cookie", "aat_token")
 
-# API endpoints
+# Action
+SERVICE_SYNC: Final = "sync"
+ATTR_TOKEN: Final = "token"
+ATTR_CPE: Final = "cpe"
+ATTR_DRY_RUN: Final = "dry_run"
+ATTR_HISTORY_DAYS: Final = "history_days"
+
+# API
 BASE_URL: Final = "https://balcaodigital.e-redes.pt"
-API_URL: Final = f"{BASE_URL}/ms/reading/data-usage/edm/get"
 
-# Timing
-DEFAULT_SCAN_INTERVAL: Final = 3600  # 1 hour in seconds
+# PT followed by 18 alphanumerics (e.g. PT0002000012345678AB), after removing
+# spaces and upper-casing.
+CPE_PATTERN: Final = re.compile(r"^PT[0-9A-Z]{18}$")
 
-# API request types
-REQUEST_TYPE_15MIN: Final = "3"  # 15-minute interval readings
 
-# Sensor keys
-SENSOR_ENERGY: Final = "energy"
-SENSOR_POWER: Final = "power"
+def normalize_cpe(value: str) -> str:
+    """Strip whitespace and upper-case a pasted CPE."""
+    return "".join(value.split()).upper()

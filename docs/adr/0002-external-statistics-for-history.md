@@ -28,3 +28,9 @@ The Energy Dashboard consumption source is the `eredes:energy_…` statistic, no
 sensor (see README). The cumulative `sum` is seeded from the last imported hour on
 resume, so imports are append-only; corrections to already-imported hours are not
 re-pulled.
+
+**Update (v2.0.0):** the Daily Energy sensor is gone (see
+[0005](0005-manual-sync-replaces-polling.md)); the statistic id, source, name and unit
+are unchanged. Resume is still append-only, with two refinements: the newest hour is
+not written until all four quarter-hours are published, and a last stored hour left
+partial by 1.x is reopened once it comes back complete.
