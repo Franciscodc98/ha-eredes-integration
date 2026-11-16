@@ -34,3 +34,9 @@ re-pulled.
 are unchanged. Resume is still append-only, with two refinements: the newest hour is
 not written until all four quarter-hours are published, and a last stored hour left
 partial by 1.x is reopened once it comes back complete.
+
+**Update (v2.0.1):** the metadata now sets `unit_class: "energy"`. It used to pass
+`None`, and the Energy dashboard's statistic picker only lists statistics of the
+`energy` class, so the imported history could not be selected. Every non-dry sync
+re-writes the metadata (even with no new hours), which repairs statistics created
+earlier.
