@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import logging
 from datetime import UTC, datetime, timedelta
+from functools import partial
 from typing import TYPE_CHECKING, Any
 
 import pytest
 from homeassistant.components.recorder.statistics import (
     async_add_external_statistics,
     get_last_statistics,
+    get_metadata,
     statistics_during_period,
 )
 from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
@@ -469,3 +471,41 @@ async def test_statistic_format_is_unchanged(
 
     assert STAT_ID == "eredes:energy_345678ab"
     assert last[STAT_ID]
+
+
+async def _metadata(hass: HomeAssistant) -> dict[str, Any]:
+    await async_wait_recording_done(hass)
+    found = await hass.async_add_executor_job(
+        partial(get_metadata, hass, statistic_ids={STAT_ID})
+    )
+    return dict(found[STAT_ID][1])
+
+
+async def test_statistic_is_offered_to_the_energy_dashboard(
+    hass: HomeAssistant,
+) -> None:
+    """The Energy picker only lists statistics whose unit class is ``energy``."""
+    await _sync(hass, history_days=10)
+
+    metadata = await _metadata(hass)
+
+    assert metadata["unit_class"] == "energy"
+    assert metadata["unit_of_measurement"] == "kWh"
+    assert metadata["source"] == DOMAIN
+    assert metadata["has_sum"] is True
+
+
+async def test_sync_with_nothing_new_repairs_missing_unit_class(
+    hass: HomeAssistant,
+) -> None:
+    """A statistic written without a unit class is fixed by the next sync."""
+    await _sync(hass, history_days=10)
+    legacy = statistic_metadata(CPE)
+    legacy["unit_class"] = None
+    async_add_external_statistics(hass, legacy, [])
+    assert (await _metadata(hass))["unit_class"] is None
+
+    response = await _sync(hass)
+
+    assert response["hours_written"] == 0
+    assert (await _metadata(hass))["unit_class"] == "energy"

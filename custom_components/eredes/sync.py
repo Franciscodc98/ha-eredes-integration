@@ -29,6 +29,7 @@ from homeassistant.const import UnitOfEnergy
 from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.util import dt as dt_util
+from homeassistant.util.unit_conversion import EnergyConverter
 
 from .const import DOMAIN
 from .eredes_api import (
@@ -81,7 +82,11 @@ def statistic_id(cpe: str) -> str:
 
 
 def statistic_metadata(cpe: str) -> StatisticMetaData:
-    """Return the metadata of the external energy statistic (unchanged format)."""
+    """Return the metadata of the external energy statistic.
+
+    ``unit_class`` must be ``"energy"``: the Energy dashboard's statistic picker
+    only offers statistics of that class, and one with no class is hidden.
+    """
     return StatisticMetaData(
         has_mean=False,
         has_sum=True,
@@ -89,7 +94,7 @@ def statistic_metadata(cpe: str) -> StatisticMetaData:
         name=f"E-REDES Energy ({cpe[-8:]})",
         source=DOMAIN,
         statistic_id=statistic_id(cpe),
-        unit_class=None,
+        unit_class=EnergyConverter.UNIT_CLASS,
         unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
     )
 
@@ -336,9 +341,12 @@ async def async_sync(
                 plan.incomplete_interior_hours[0].isoformat(),
             )
 
-        if dry_run or not plan.rows:
+        if dry_run or (not plan.rows and last is None):
             return result
 
+        # Written even with no new rows when the statistic already exists: the
+        # import also upserts the metadata, which repairs statistics created by
+        # earlier versions without a unit class (hidden from the Energy picker).
         async_add_external_statistics(
             hass,
             statistic_metadata(cpe),
