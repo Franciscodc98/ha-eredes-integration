@@ -5,11 +5,21 @@ from __future__ import annotations
 import logging
 import re
 from datetime import UTC, datetime
-from http.cookies import SimpleCookie
+from http.cookies import CookieError, SimpleCookie
 from typing import TYPE_CHECKING, Any
 from zoneinfo import ZoneInfo
 
-from .exceptions import ERedesAuthenticationError, ERedesConnectionError, ERedesError
+import aiohttp
+
+from .exceptions import (
+    ERedesAccessDeniedError,
+    ERedesAuthenticationError,
+    ERedesCaptchaChallengeError,
+    ERedesConnectionError,
+    ERedesHTTPError,
+    ERedesUnexpectedResponseError,
+    ERedesUnsuccessfulResponseError,
+)
 from .models import ConsumptionData, ConsumptionReading
 
 if TYPE_CHECKING:
@@ -22,6 +32,9 @@ API_URL = f"{BASE_URL}/ms/reading/data-usage/edm/get"
 
 # Load-curve timestamps are Lisbon wall-clock time despite their ``Z`` suffix.
 LISBON = ZoneInfo("Europe/Lisbon")
+
+# A 31-day load curve is ~3000 points and the request asks the server to wait.
+REQUEST_TIMEOUT = aiohttp.ClientTimeout(total=120)
 
 
 def _to_utc_series(timestamps: list[datetime]) -> list[datetime]:
@@ -50,8 +63,24 @@ def _to_utc_series(timestamps: list[datetime]) -> list[datetime]:
     return utc_timestamps
 
 
+def _is_recaptcha_challenge(headers: Any) -> bool:
+    """Return True if a response carries the bot gate's ``recaptcha`` header.
+
+    The portal answers ``recaptcha: true`` (docs/adr/0003); any value other
+    than an explicit false-ish one is read as a challenge.
+    """
+    value = headers.get("recaptcha")
+    if value is None:
+        return False
+    return str(value).strip().lower() not in {"false", "0", ""}
+
+
 class ERedesClient:
-    """Client for interacting with the E-REDES API."""
+    """Client for the E-REDES ``edm/get`` endpoint.
+
+    One instance is built per sync from the pasted token and discarded
+    afterwards; the token is never persisted.
+    """
 
     def __init__(
         self,
@@ -70,13 +99,18 @@ class ERedesClient:
                   (``PHPSESSID=xxx; aat=xxx; SimpleSAML=xxx``)
         """
         self._session = session
-        self._apply_access_token(access_token)
-
-    def _apply_access_token(self, access_token: str) -> None:
-        """Normalize the pasted value and derive the cookies, token and header."""
         self._cookies = self._normalize_cookies(access_token)
         self._aat_token = self._cookies.get("aat", "")
         self._cookie_header = self._build_cookie_header(self._cookies)
+
+    def __repr__(self) -> str:
+        """Never expose the credential, even in a debugger or a log line."""
+        return "ERedesClient(access_token=<redacted>)"
+
+    @property
+    def has_token(self) -> bool:
+        """Return True if the pasted value yielded an ``aat`` token."""
+        return bool(self._aat_token)
 
     def _normalize_cookies(self, access_token: str) -> dict[str, str]:
         """Normalize a pasted authentication value into a cookies dict.
@@ -93,11 +127,15 @@ class ERedesClient:
                 cookies["aat"] = bare
         return cookies
 
-    def _parse_cookies(self, cookie_string: str) -> dict[str, str]:
+    @staticmethod
+    def _parse_cookies(cookie_string: str) -> dict[str, str]:
         """Parse a cookie string into a dictionary."""
         cookies: dict[str, str] = {}
-        simple_cookie = SimpleCookie()
-        simple_cookie.load(cookie_string)
+        simple_cookie: SimpleCookie = SimpleCookie()
+        try:
+            simple_cookie.load(cookie_string)
+        except CookieError:
+            return cookies
         for key, morsel in simple_cookie.items():
             cookies[key] = morsel.value
         return cookies
@@ -106,30 +144,6 @@ class ERedesClient:
     def _build_cookie_header(cookies: dict[str, str]) -> str:
         """Serialize a cookies dict into a Cookie request header."""
         return "; ".join(f"{k}={v}" for k, v in cookies.items())
-
-    def update_access_token(self, access_token: str) -> None:
-        """Update the access token."""
-        self._apply_access_token(access_token)
-
-    async def validate_token(self, cpe: str) -> bool:
-        """Validate the token by making a simple API call.
-
-        Args:
-            cpe: The CPE to use for validation (must be a real CPE for the user)
-
-        Returns:
-            True if the token is valid, False otherwise
-        """
-        try:
-            end_date = datetime.now()
-            start_date = end_date.replace(hour=0, minute=0, second=0, microsecond=0)
-            await self.get_consumption(cpe, start_date, end_date)
-            return True
-        except ERedesAuthenticationError:
-            return False
-        except ERedesError:
-            # Other errors mean the token is valid but something else failed
-            return True
 
     def _get_headers(self) -> dict[str, str]:
         """Get headers for API requests."""
@@ -146,7 +160,9 @@ class ERedesClient:
             "Show-Loader": "true",
             "Cookie": self._cookie_header,
         }
-        # Also include Authorization-Request header if we have the aat token
+        # Load-bearing despite the name: the gateway only checks this header is
+        # present on /ms/* data endpoints, and refuses the request with a 403
+        # without it. Do not remove — see docs/adr/0003.
         if self._aat_token:
             headers["Authorization-Request"] = self._aat_token
         return headers
@@ -157,30 +173,30 @@ class ERedesClient:
         start_date: datetime,
         end_date: datetime,
     ) -> ConsumptionData:
-        """Fetch consumption data for the specified date range.
+        """Fetch the 15-minute load curve for the specified date range.
 
         Args:
-            cpe: The CPE (meter) identifier
-            start_date: Start of the date range
-            end_date: End of the date range
+            cpe: The CPE (delivery point) identifier
+            start_date: Start of the range, naive Europe/Lisbon wall clock
+            end_date: End of the range, naive Europe/Lisbon wall clock
 
         Returns:
-            ConsumptionData with readings for the specified period
+            ConsumptionData with aware-UTC readings for the period
 
         Raises:
-            ERedesAuthenticationError: If authentication fails
-            ERedesConnectionError: If connection fails
-            ERedesError: For other API errors
+            ERedesAuthenticationError: HTTP 401, the token is dead
+            ERedesCaptchaChallengeError: HTTP 403 with a ``recaptcha`` header
+            ERedesAccessDeniedError: any other HTTP 403
+            ERedesHTTPError: any other non-200 status
+            ERedesConnectionError: network failure or timeout
+            ERedesUnsuccessfulResponseError: ``Body.Success`` is false
+            ERedesUnexpectedResponseError: the body could not be understood
         """
-        # Format dates for API
-        start_str = start_date.strftime("%Y-%m-%d %H:%M:%S")
-        end_str = end_date.strftime("%Y-%m-%d %H:%M:%S")
-
         payload = {
             "cpe": cpe,
             "request_type": "3",  # 15-minute interval readings
-            "start_date": start_str,
-            "end_date": end_str,
+            "start_date": start_date.strftime("%Y-%m-%d %H:%M:%S"),
+            "end_date": end_date.strftime("%Y-%m-%d %H:%M:%S"),
             "wait": True,
             "formatted": False,
             "nif_requester": None,
@@ -193,50 +209,59 @@ class ERedesClient:
                 API_URL,
                 json=payload,
                 headers=self._get_headers(),
+                timeout=REQUEST_TIMEOUT,
             ) as response:
-                # Capture refreshed session cookie from response
                 self._refresh_session_from_response(response)
 
                 if response.status == 401:
-                    raise ERedesAuthenticationError(
-                        "Token expired - please update your token"
-                    )
+                    raise ERedesAuthenticationError("E-REDES refused the access token")
 
                 if response.status == 403:
-                    raise ERedesAuthenticationError("Access denied - invalid token")
+                    if _is_recaptcha_challenge(response.headers):
+                        raise ERedesCaptchaChallengeError(
+                            "E-REDES answered with a reCAPTCHA challenge"
+                        )
+                    raise ERedesAccessDeniedError("E-REDES denied access (HTTP 403)")
 
                 if response.status != 200:
-                    raise ERedesError(
-                        f"API request failed with status {response.status}"
-                    )
+                    raise ERedesHTTPError(response.status)
 
-                data = await response.json()
-                return self._parse_consumption_response(cpe, data, start_date, end_date)
+                try:
+                    data = await response.json(content_type=None)
+                except ValueError as ex:
+                    raise ERedesUnexpectedResponseError(
+                        "E-REDES returned a body that is not JSON"
+                    ) from ex
 
-        except ERedesError:
-            raise
-        except Exception as ex:
-            _LOGGER.exception("Error fetching consumption data")
-            raise ERedesConnectionError(f"Failed to fetch data: {ex}") from ex
+        except (aiohttp.ClientError, TimeoutError) as ex:
+            # Only the exception type: aiohttp messages are safe today, but the
+            # request carries the credential and nothing here should echo it.
+            _LOGGER.debug("Request to E-REDES failed: %s", type(ex).__name__)
+            raise ERedesConnectionError(
+                f"Failed to reach E-REDES ({type(ex).__name__})"
+            ) from ex
+
+        return self._parse_consumption_response(cpe, data, start_date, end_date)
 
     def _refresh_session_from_response(self, response: Any) -> None:
-        """Update session cookie from API response Set-Cookie header."""
+        """Roll the secondary PHPSESSID cookie from a Set-Cookie header.
+
+        Not a credential (CONTEXT.md → Server session); kept only so the
+        requests of one sync look like one browser session.
+        """
         set_cookie = response.headers.get("Set-Cookie", "")
         if "PHPSESSID=" in set_cookie:
-            # Extract new PHPSESSID
             match = re.search(r"PHPSESSID=([^;]+)", set_cookie)
             if match:
                 new_phpsessid = match.group(1)
-                old_phpsessid = self._cookies.get("PHPSESSID", "")
-                if new_phpsessid != old_phpsessid:
+                if new_phpsessid != self._cookies.get("PHPSESSID", ""):
                     self._cookies["PHPSESSID"] = new_phpsessid
                     self._cookie_header = self._build_cookie_header(self._cookies)
-                    _LOGGER.debug("Session refreshed with new PHPSESSID")
 
     def _parse_consumption_response(
         self,
         cpe: str,
-        data: dict[str, Any],
+        data: Any,
         start_date: datetime,
         end_date: datetime,
     ) -> ConsumptionData:
@@ -260,50 +285,53 @@ class ERedesClient:
                 }
             }
         }
+
+        A structural surprise raises instead of returning a partial series: a
+        silently short series would be written as a hole that is never
+        re-fetched. Individual points without a value or with an unparseable
+        timestamp are skipped; the resulting short hour is reported by the sync.
         """
+        if not isinstance(data, dict) or not isinstance(data.get("Body"), dict):
+            raise ERedesUnexpectedResponseError("E-REDES response has no Body")
+        body = data["Body"]
+
+        if not body.get("Success", False):
+            raise ERedesUnsuccessfulResponseError(
+                "E-REDES returned an unsuccessful response"
+            )
+
         readings: list[ConsumptionReading] = []
-
         try:
-            body = data.get("Body", {})
-            if not body.get("Success", False):
-                _LOGGER.warning("API returned unsuccessful response")
-                return ConsumptionData(
-                    cpe=cpe, readings=[], start_date=start_date, end_date=end_date
-                )
-
-            result = body.get("Result", {})
-            devices = result.get("utilitiesDevices", [])
-
-            for device in devices:
-                load_curves_groups = device.get("meterLoadCurves", [])
-                for group in load_curves_groups:
-                    # We want "A+" register (active energy import)
-                    register = group.get("register", "")
-                    if register != "A+":
+            result = body.get("Result") or {}
+            for device in result.get("utilitiesDevices") or []:
+                for group in device.get("meterLoadCurves") or []:
+                    # Only "A+" (active energy imported from the grid).
+                    if group.get("register", "") != "A+":
                         continue
 
-                    load_curves = group.get("loadCurves", [])
                     # Collect the group's series before converting: resolving
                     # the repeated autumn hour needs the readings in order,
                     # not one timestamp at a time.
                     local_timestamps: list[datetime] = []
                     values_wh: list[float] = []
-                    for curve in load_curves:
+                    for curve in group.get("loadCurves") or []:
                         timestamp_str = curve.get("loadCurveTimestamp")
                         value = curve.get("meterLoadCurve")
-                        unit = curve.get("meterLoadCurveUnitMeasurement", "").lower()
+                        unit = str(
+                            curve.get("meterLoadCurveUnitMeasurement") or ""
+                        ).lower()
 
-                        if timestamp_str and value is not None:
-                            # Naive Lisbon wall clock — the trailing Z is a lie
-                            timestamp = self._parse_timestamp(timestamp_str)
-                            if timestamp:
-                                # Value is in kWh, convert to Wh for internal use
-                                values_wh.append(
-                                    float(value) * 1000
-                                    if unit == "kwh"
-                                    else float(value)
-                                )
-                                local_timestamps.append(timestamp)
+                        if not timestamp_str or value is None:
+                            continue
+                        # Naive Lisbon wall clock — the trailing Z is a lie
+                        timestamp = self._parse_timestamp(str(timestamp_str))
+                        if timestamp is None:
+                            continue
+                        # Value is in kWh, convert to Wh for internal use
+                        values_wh.append(
+                            float(value) * 1000 if unit == "kwh" else float(value)
+                        )
+                        local_timestamps.append(timestamp)
 
                     readings.extend(
                         ConsumptionReading(timestamp=timestamp, value_wh=value_wh)
@@ -311,11 +339,11 @@ class ERedesClient:
                             _to_utc_series(local_timestamps), values_wh, strict=True
                         )
                     )
+        except (AttributeError, KeyError, TypeError, ValueError) as ex:
+            raise ERedesUnexpectedResponseError(
+                f"Could not parse the E-REDES load curve ({type(ex).__name__})"
+            ) from ex
 
-        except (KeyError, TypeError, ValueError) as ex:
-            _LOGGER.exception("Error parsing consumption response: %s", ex)
-
-        # Sort readings by timestamp
         readings.sort(key=lambda r: r.timestamp)
 
         return ConsumptionData(
@@ -325,7 +353,8 @@ class ERedesClient:
             end_date=end_date,
         )
 
-    def _parse_timestamp(self, timestamp_str: str) -> datetime | None:
+    @staticmethod
+    def _parse_timestamp(timestamp_str: str) -> datetime | None:
         """Parse a load-curve timestamp into a naive Lisbon wall-clock time.
 
         The ``Z`` suffix is stripped by the format, not honoured: these are

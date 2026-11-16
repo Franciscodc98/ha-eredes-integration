@@ -2,62 +2,129 @@
   "config": {
     "step": {
       "user": {
-        "title": "Conta E-REDES",
-        "description": "Introduza o token e codigo CPE do Balcao Digital E-REDES.\n\nPara obter o token:\n1. Aceda a {setup_url}\n2. Abra as ferramentas de desenvolvimento (F12)\n3. Va a Application > Cookies\n4. Copie o valor do cookie 'aat'",
+        "title": "Ponto de entrega E-REDES",
+        "description": "Introduza o CPE do ponto de entrega a importar de {setup_url}.\n\nNenhum token é guardado. Para importar consumos, abra as opções desta entrada (\"Sincronizar agora\") ou chame a ação `eredes.sync` com um token acabado de colar.",
         "data": {
-          "access_token": "Token AAT",
-          "cpe": "Codigo CPE"
+          "cpe": "Código CPE"
         },
         "data_description": {
-          "access_token": "O valor do cookie 'aat' da sua sessao no browser. O cabecalho Cookie completo tambem e aceite.",
-          "cpe": "O codigo CPE do seu contador (ex: PT0002000012345678XX)"
-        }
-      },
-      "reauth_confirm": {
-        "title": "Re-autenticar com E-REDES",
-        "description": "A sua sessao E-REDES expirou. Por favor introduza um novo token para o CPE {cpe}.\n\nPara obter o token:\n1. Aceda a {setup_url}\n2. Abra as ferramentas de desenvolvimento (F12)\n3. Va a Application > Cookies\n4. Copie o valor do cookie 'aat'",
-        "data": {
-          "access_token": "Token AAT"
-        }
-      },
-      "reconfigure": {
-        "title": "Reconfigurar E-REDES",
-        "description": "Atualize a sua configuracao E-REDES.",
-        "data": {
-          "access_token": "Token AAT",
-          "cpe": "Codigo CPE"
+          "cpe": "O código do seu ponto de entrega, ex: PT0002000012345678XX."
         }
       }
     },
     "error": {
-      "invalid_auth": "Token invalido ou expirado",
-      "cannot_connect": "Nao foi possivel ligar ao E-REDES",
-      "unknown": "Ocorreu um erro inesperado"
+      "invalid_cpe": "Isto não parece um CPE (PT seguido de 18 letras ou dígitos)."
     },
     "abort": {
-      "already_configured": "Este CPE ja esta configurado",
-      "reauth_successful": "Re-autenticacao bem sucedida",
-      "reconfigure_successful": "Reconfiguracao bem sucedida"
+      "already_configured": "Este CPE já está configurado"
     }
   },
   "options": {
     "step": {
       "init": {
-        "title": "Opcoes E-REDES"
+        "title": "Sincronizar agora",
+        "description": "Cole um token acabado de obter para importar o consumo que falta no painel Energia. O token é usado só nesta sincronização e nunca é guardado.\n\nPara o obter: entre em {setup_url}, abra as ferramentas de desenvolvimento (F12), vá a Application > Cookies e copie o valor do cookie 'aat'. O token expira pouco depois do login, por isso sincronize logo.",
+        "data": {
+          "token": "Token de acesso (aat)",
+          "dry_run": "Simulação",
+          "history_days": "Dias de histórico"
+        },
+        "data_description": {
+          "token": "O valor do cookie 'aat', 'aat=…', ou o cabeçalho Cookie completo.",
+          "dry_run": "Obtém e calcula tudo, mas não escreve nada.",
+          "history_days": "Até onde recua a primeira importação. Ignorado quando já há estatísticas."
+        }
       }
     },
+    "error": {
+      "token_expired": "A E-REDES recusou o token (401). Expirou: entre novamente e cole um novo.",
+      "captcha_challenge": "A E-REDES respondeu com um desafio reCAPTCHA (403). Não é um problema do token; nada foi escrito. Tente mais tarde.",
+      "access_denied": "A E-REDES negou o acesso (403). Confirme que o CPE pertence à conta que emitiu o token.",
+      "http_error": "A E-REDES respondeu com o estado HTTP {status}. Nada foi escrito.",
+      "http_error_first_block": "A E-REDES respondeu com o estado HTTP {status} para a parte mais antiga da janela. Nada foi escrito. Se o contrato é recente, experimente menos dias de histórico.",
+      "cannot_connect": "Não foi possível contactar a E-REDES. Nada foi escrito.",
+      "unexpected_response": "A E-REDES devolveu uma resposta que não foi possível interpretar. Nada foi escrito.",
+      "unsuccessful_after_data": "A E-REDES reportou uma falha no bloco de pedido {block}, depois de blocos anteriores terem devolvido dados. Nada foi escrito.",
+      "empty_block_between_data": "O bloco de pedido {block} veio vazio entre blocos com dados. Nada foi escrito, para não importar um buraco.",
+      "no_successful_response": "A E-REDES não devolveu nenhuma resposta com sucesso para a janela pedida. Confirme o CPE e os dias de histórico.",
+      "sync_in_progress": "Já está a decorrer uma sincronização para este CPE.",
+      "token_missing": "Não foi encontrado nenhum token no valor colado.",
+      "unknown": "Ocorreu um erro inesperado."
+    },
     "abort": {
-      "no_options": "Nao existem opcoes disponiveis para esta integracao"
+      "sync_complete": "Sincronização concluída: {hours_written} hora(s) escrita(s), {kwh_added} kWh acrescentados, total {final_sum_kwh} kWh.\n\nLeituras obtidas: {readings_fetched} ({first_reading} → {last_reading}).\nHoras interiores incompletas: {incomplete_interior_hours}. Horas em falta: {missing_hours}.\nHora parcial final descartada: {dropped_partial_final_hour}. Última hora guardada reaberta: {reopened_last_hour}.",
+      "dry_run_complete": "Simulação, nada foi escrito: seriam escritas {hours_written} hora(s), {kwh_added} kWh acrescentados, total {final_sum_kwh} kWh.\n\nLeituras obtidas: {readings_fetched} ({first_reading} → {last_reading}).\nHoras interiores incompletas: {incomplete_interior_hours}. Horas em falta: {missing_hours}.\nHora parcial final descartada: {dropped_partial_final_hour}. Última hora guardada reaberta: {reopened_last_hour}."
     }
   },
-  "entity": {
-    "sensor": {
-      "energy": {
-        "name": "Energia Diaria"
-      },
-      "power": {
-        "name": "Potencia"
+  "services": {
+    "sync": {
+      "name": "Sincronizar consumos",
+      "description": "Importa o consumo que falta na estatística de longo prazo E-REDES, com um token acabado de colar. Atenção: o Home Assistant grava os dados das ações, incluindo este token, na sua base de dados; a opção \"Sincronizar agora\" da entrada não o faz.",
+      "fields": {
+        "token": {
+          "name": "Token de acesso",
+          "description": "O valor do cookie 'aat', 'aat=…', ou o cabeçalho Cookie completo. Usado só nesta chamada."
+        },
+        "cpe": {
+          "name": "CPE",
+          "description": "O CPE configurado a sincronizar. Opcional quando só há um."
+        },
+        "dry_run": {
+          "name": "Simulação",
+          "description": "Obtém e calcula tudo, mas não escreve nada."
+        },
+        "history_days": {
+          "name": "Dias de histórico",
+          "description": "Até onde recua a primeira importação. Ignorado quando já há estatísticas."
+        }
       }
+    }
+  },
+  "exceptions": {
+    "token_expired": {
+      "message": "A E-REDES recusou o token (401). Expirou: entre novamente e cole um novo."
+    },
+    "captcha_challenge": {
+      "message": "A E-REDES respondeu com um desafio reCAPTCHA (403). Não é um problema do token; nada foi escrito. Tente mais tarde."
+    },
+    "access_denied": {
+      "message": "A E-REDES negou o acesso (403). Confirme que o CPE pertence à conta que emitiu o token."
+    },
+    "http_error": {
+      "message": "A E-REDES respondeu com o estado HTTP {status}. Nada foi escrito."
+    },
+    "http_error_first_block": {
+      "message": "A E-REDES respondeu com o estado HTTP {status} para a parte mais antiga da janela. Nada foi escrito. Se o contrato é recente, experimente um history_days menor."
+    },
+    "cannot_connect": {
+      "message": "Não foi possível contactar a E-REDES. Nada foi escrito."
+    },
+    "unexpected_response": {
+      "message": "A E-REDES devolveu uma resposta que não foi possível interpretar. Nada foi escrito."
+    },
+    "unsuccessful_after_data": {
+      "message": "A E-REDES reportou uma falha no bloco de pedido {block}, depois de blocos anteriores terem devolvido dados. Nada foi escrito."
+    },
+    "empty_block_between_data": {
+      "message": "O bloco de pedido {block} veio vazio entre blocos com dados. Nada foi escrito, para não importar um buraco."
+    },
+    "no_successful_response": {
+      "message": "A E-REDES não devolveu nenhuma resposta com sucesso para a janela pedida. Confirme o CPE e o history_days."
+    },
+    "sync_in_progress": {
+      "message": "Já está a decorrer uma sincronização para este CPE."
+    },
+    "token_missing": {
+      "message": "Não foi encontrado nenhum token no valor colado."
+    },
+    "cpe_not_configured": {
+      "message": "Nenhuma entrada E-REDES carregada tem esse CPE."
+    },
+    "cpe_required": {
+      "message": "Há vários CPE configurados: indique qual sincronizar."
+    },
+    "no_entries": {
+      "message": "Não há nenhuma entrada E-REDES configurada e carregada."
     }
   }
 }

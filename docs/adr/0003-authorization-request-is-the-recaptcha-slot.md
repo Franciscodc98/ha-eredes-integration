@@ -65,3 +65,9 @@ The current `get_consumption` raises `ERedesAuthenticationError` for both, so a 
 challenge surfaces to the user as *"Authentication failed - please update your access
 token"*. That is a real defect, though **not** the cause of the routine ~2h expiry
 reported in [0001](0001-manual-token-paste-auth.md) — that one is the 91-minute token.
+
+**Update (v2.0.0):** fixed. `401` raises `ERedesAuthenticationError` and `403` with a
+`recaptcha` header raises `ERedesCaptchaChallengeError`, which is deliberately not an
+authentication error. With no polling there is nothing to retry automatically, so the
+sync aborts with a message saying the token is likely fine and to try again later
+(see [0005](0005-manual-sync-replaces-polling.md)).
