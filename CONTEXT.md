@@ -49,6 +49,21 @@ yields 0%–86%. One 14-day span carried status `1` on 1343 of 1344 points, so a
 filter would have silently discarded the entire period.
 _Avoid_: "measurement", "sample".
 
+**Tariff period**:
+One of *vazio* (off-peak), *cheias* (shoulder) and *ponta* (peak). A bi-hourly tariff
+has *vazio* and *fora de vazio* (cheias + ponta); a simple tariff has one price. The
+period of a reading depends on the Lisbon wall clock, the legal season (winter/summer
+time), the day of the week, and the **cycle**. See `docs/adr/0006`.
+
+**Cycle (ciclo horário)**:
+The BTN timetable of tariff periods. *Daily* (`daily`): the same every day. *Weekly*
+(`weekly`): weekdays, Saturdays and Sundays differ. Chosen per contract.
+_Avoid_: "schedule" for the contract choice (it names the tables).
+
+**Tariff plan**:
+A user-defined offer to estimate costs for (a config subentry): option, cycle, power
+price per day, energy prices without VAT, and an optional discount on energy.
+
 ## Authentication
 
 **Access token (`aat`)**:

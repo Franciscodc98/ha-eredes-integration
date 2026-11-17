@@ -21,7 +21,7 @@
   },
   "options": {
     "step": {
-      "init": {
+      "sync": {
         "title": "Sync now",
         "description": "Paste a fresh access token to import the consumption that is missing from the Energy dashboard. The token is used for this sync only and is never stored.\n\nTo get it: log into {setup_url}, open the browser dev tools (F12), go to Application > Cookies and copy the value of the 'aat' cookie. The token expires a short while after login, so sync right away.",
         "data": {
@@ -33,6 +33,31 @@
           "token": "The 'aat' cookie value, 'aat=…', or the full Cookie header.",
           "dry_run": "Fetch and compute everything, but write nothing.",
           "history_days": "How far back the first import goes. Ignored once statistics exist."
+        }
+      },
+      "init": {
+        "title": "E-REDES",
+        "menu_options": {
+          "sync": "Sync now",
+          "taxes": "Taxes and levies (cost estimates)"
+        }
+      },
+      "taxes": {
+        "title": "Taxes and levies",
+        "description": "Used by every tariff plan's cost estimate. Defaults follow a 2026 invoice for a contract up to 6.9 kVA; check them against your own invoice. Rates are percentages.",
+        "data": {
+          "vat_reduced_percent": "Reduced VAT rate",
+          "vat_normal_percent": "Normal VAT rate",
+          "vat_reduced_kwh_per_30_days": "kWh at the reduced rate per 30 days",
+          "vat_power_percent": "VAT on the power charge",
+          "iec_per_kwh": "IEC (excise duty) per kWh",
+          "dgeg_per_month": "DGEG levy per month",
+          "cav_per_month": "Audiovisual contribution (CAV) per month",
+          "vat_cav_percent": "VAT on the CAV"
+        },
+        "data_description": {
+          "vat_reduced_kwh_per_30_days": "200 kWh (300 for large families), scaled by the days in the month.",
+          "vat_power_percent": "The reduced rate only applies up to 3.45 kVA."
         }
       }
     },
@@ -125,6 +150,75 @@
     },
     "no_entries": {
       "message": "No E-REDES entry is configured and loaded."
+    }
+  },
+  "config_subentries": {
+    "plan": {
+      "initiate_flow": {
+        "user": "Add tariff plan",
+        "reconfigure": "Edit tariff plan"
+      },
+      "entry_type": "Tariff plan",
+      "step": {
+        "user": {
+          "title": "Tariff plan",
+          "description": "A tariff offer to estimate costs for: your current contract, the regulated tariff, or another supplier's offer. Prices exclude VAT.",
+          "data": {
+            "name": "Name",
+            "option": "Tariff option",
+            "cycle": "Cycle",
+            "power_per_day": "Power charge per day",
+            "energy_discount_percent": "Discount on energy"
+          },
+          "data_description": {
+            "cycle": "Only for bi- and tri-hourly. Not sure? Add one plan per cycle and compare.",
+            "power_per_day": "For your contracted power, without VAT.",
+            "energy_discount_percent": "Percentage off the energy price only (not power), before VAT. Leave 0 if none."
+          }
+        },
+        "reconfigure": {
+          "title": "Tariff plan",
+          "description": "A tariff offer to estimate costs for: your current contract, the regulated tariff, or another supplier's offer. Prices exclude VAT.",
+          "data": {
+            "name": "Name",
+            "option": "Tariff option",
+            "cycle": "Cycle",
+            "power_per_day": "Power charge per day",
+            "energy_discount_percent": "Discount on energy"
+          },
+          "data_description": {
+            "cycle": "Only for bi- and tri-hourly. Not sure? Add one plan per cycle and compare.",
+            "power_per_day": "For your contracted power, without VAT.",
+            "energy_discount_percent": "Percentage off the energy price only (not power), before VAT. Leave 0 if none."
+          }
+        },
+        "prices": {
+          "title": "Energy prices",
+          "description": "Energy prices in €/kWh, without VAT and before any discount.",
+          "data": {
+            "price_simple": "Energy price",
+            "price_vazio": "Vazio (off-peak)",
+            "price_fora_vazio": "Fora de vazio (outside off-peak)",
+            "price_cheias": "Cheias (shoulder)",
+            "price_ponta": "Ponta (peak)"
+          }
+        }
+      }
+    }
+  },
+  "selector": {
+    "option": {
+      "options": {
+        "simple": "Simple (one price)",
+        "bi_hourly": "Bi-hourly (vazio / fora de vazio)",
+        "tri_hourly": "Tri-hourly (vazio / cheias / ponta)"
+      }
+    },
+    "cycle": {
+      "options": {
+        "daily": "Daily cycle (same hours every day)",
+        "weekly": "Weekly cycle (weekends mostly off-peak)"
+      }
     }
   }
 }

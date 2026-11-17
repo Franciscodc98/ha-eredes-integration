@@ -1,0 +1,82 @@
+# E-REDES tariff comparison view.
+#
+# Add it as a view: open a dashboard > Edit > three dots > Raw configuration
+# editor, and paste this under `views:` (or create a new dashboard and use it
+# as its only view).
+#
+# Replace `xxxxxxxx` with your CPE suffix in lower case (the last 8 characters,
+# e.g. PT...345678AB -> 345678ab). The cost series ids end with the plan's id:
+# find them in Developer tools > Statistics, searching for "eredes:cost_".
+# Remove the cost entries you do not have; add one per plan.
+
+title: Eletricidade
+path: eletricidade
+icon: mdi:flash
+cards:
+  - type: statistics-graph
+    title: Consumo mensal por período (ciclo diário)
+    chart_type: bar-stack
+    period: month
+    days_to_show: 365
+    stat_types: [change]
+    entities:
+      - entity: eredes:energy_xxxxxxxx_daily_vazio
+        name: Vazio
+      - entity: eredes:energy_xxxxxxxx_daily_cheias
+        name: Cheias
+      - entity: eredes:energy_xxxxxxxx_daily_ponta
+        name: Ponta
+
+  - type: statistics-graph
+    title: Consumo mensal por período (ciclo semanal)
+    chart_type: bar-stack
+    period: month
+    days_to_show: 365
+    stat_types: [change]
+    entities:
+      - entity: eredes:energy_xxxxxxxx_weekly_vazio
+        name: Vazio
+      - entity: eredes:energy_xxxxxxxx_weekly_cheias
+        name: Cheias
+      - entity: eredes:energy_xxxxxxxx_weekly_ponta
+        name: Ponta
+
+  - type: statistics-graph
+    title: Custo mensal estimado por plano
+    chart_type: bar
+    period: month
+    days_to_show: 365
+    stat_types: [change]
+    entities:
+      - entity: eredes:cost_xxxxxxxx_<plan id>
+        name: Contrato atual
+      - entity: eredes:cost_xxxxxxxx_<plan id>
+        name: Bi-horário diário
+      - entity: eredes:cost_xxxxxxxx_<plan id>
+        name: Tri-horário semanal
+
+  - type: statistics-graph
+    title: Potência máxima mensal (média de 15 min)
+    chart_type: bar
+    period: month
+    days_to_show: 365
+    stat_types: [max]
+    min_y_axis: 0
+    max_y_axis: 6.9  # set near your contracted power (kVA)
+    entities:
+      - entity: eredes:power_xxxxxxxx
+        name: Potência máxima
+
+  - type: statistics-graph
+    title: Consumo diário por período, últimos 30 dias (ciclo diário)
+    chart_type: bar-stack
+    period: day
+    days_to_show: 30
+    stat_types: [change]
+    entities:
+      - entity: eredes:energy_xxxxxxxx_daily_vazio
+        name: Vazio
+      - entity: eredes:energy_xxxxxxxx_daily_cheias
+        name: Cheias
+      - entity: eredes:energy_xxxxxxxx_daily_ponta
+        name: Ponta

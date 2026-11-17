@@ -131,6 +131,59 @@ The data lands in the long-term statistic **E-REDES Energy (`<CPE suffix>`)**
 2. Under "Grid consumption", click **Add consumption**
 3. Select **E-REDES Energy (`<CPE suffix>`)**
 
+## Tariff periods, peak power and plan comparison
+
+Every sync also derives, from the same 15-minute data:
+
+- **Energy per tariff period** (vazio, cheias, ponta) for both BTN cycles: the
+  **daily cycle** (same hours every day) and the **weekly cycle** (weekdays, Saturdays
+  and Sundays differ; weekends are mostly vazio). Statistic ids:
+  `eredes:energy_<sfx>_daily_vazio`, `..._weekly_ponta`, etc.
+- **Power**: `eredes:power_<sfx>`, the average power of each 15-minute interval
+  (energy x 4). Its monthly maximum is what the portal shows as *potência máxima
+  tomada*. A 15-minute average hides the short peaks that trip the breaker, so use it
+  to see a trend before considering a lower contracted power, not as proof.
+- **Estimated cost per tariff plan**: `eredes:cost_<sfx>_<plan id>`.
+
+The first sync after upgrading re-reads the history once, to fill the new series.
+
+### Tariff plans
+
+On the E-REDES integration page, use **Add tariff plan** once per offer you want to
+compare: your current contract, the regulated tariff, another supplier's bi-hourly
+offer, and so on. Each plan has:
+
+- the option (simple, bi-hourly or tri-hourly) and the cycle;
+- the power price per day;
+- the energy prices in EUR/kWh, **without VAT**;
+- an optional **discount on energy** (for example 15 %; the default is 0).
+
+Not sure which cycle you would pick? Add the same offer once per cycle.
+
+Taxes and levies (VAT rates, reduced-rate kWh per 30 days, IEC, DGEG, CAV) are shared
+by all plans, under **Configure > Taxes and levies**. The defaults match a 2026 invoice
+for a contract up to 6.9 kVA; check them against yours. Changing a plan or a tax
+recomputes every cost series at once, with no token needed.
+
+To check the model, create a plan identical to your current contract and compare one
+month with your invoice. Prices are entered by hand: the integration only talks to the
+E-REDES portal. Regulated prices are published by ERSE.
+
+### Dashboard
+
+[`docs/dashboard.yaml`](docs/dashboard.yaml) is a ready-made view with:
+
+- monthly consumption per period (stacked), for each cycle;
+- the estimated monthly cost of each plan, side by side;
+- the monthly peak 15-minute power;
+- the last 30 days per period.
+
+Replace the placeholders as its comments explain.
+
+> The period tables are those in force before ERSE Directive 3/2026. New periods
+> reach BTN bi- and tri-hourly meters between July and December 2027; until the
+> integration is updated, estimates after that date use the old tables.
+
 ## Known Limitations
 
 | Limitation | Description |
@@ -140,6 +193,7 @@ The data lands in the long-term statistic **E-REDES Energy (`<CPE suffix>`)**
 | Append-only | Hours already imported are not re-pulled if E-REDES corrects them later |
 | Resolution | 15-minute data, imported as hourly statistics |
 | Import only | Only the `A+` register (consumption); no injection/solar export |
+| Estimates | Plan costs exclude discounts other than on energy, social tariff, adjustments, and invoices not aligned to calendar months |
 
 ## Development
 
