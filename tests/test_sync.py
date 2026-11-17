@@ -8,12 +8,14 @@ from functools import partial
 from typing import TYPE_CHECKING, Any
 
 import pytest
+from homeassistant.components.recorder import get_instance
 from homeassistant.components.recorder.statistics import (
     async_add_external_statistics,
     get_last_statistics,
     get_metadata,
     statistics_during_period,
 )
+from homeassistant.config_entries import ConfigSubentry
 from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 from pytest_homeassistant_custom_component.components.recorder.common import (
@@ -29,7 +31,14 @@ from custom_components.eredes.eredes_api import (
     ERedesUnexpectedResponseError,
     ERedesUnsuccessfulResponseError,
 )
+from custom_components.eredes.eredes_api.client import LISBON
+from custom_components.eredes.series import (
+    cost_statistic_id,
+    period_statistic_id,
+    power_statistic_id,
+)
 from custom_components.eredes.sync import statistic_id, statistic_metadata
+from custom_components.eredes.tariffs import Cycle, Period
 
 from .conftest import CPE, TOKEN, FakePortal
 
@@ -79,19 +88,19 @@ async def _sync(hass: HomeAssistant, **data: Any) -> dict[str, Any]:
     return dict(response)
 
 
-async def _rows(hass: HomeAssistant) -> list[dict[str, Any]]:
+async def _rows(hass: HomeAssistant, stat_id: str = STAT_ID) -> list[dict[str, Any]]:
     await async_wait_recording_done(hass)
     stats = await hass.async_add_executor_job(
         statistics_during_period,
         hass,
         datetime(2020, 1, 1, tzinfo=UTC),
         None,
-        {STAT_ID},
+        {stat_id},
         "hour",
         None,
-        {"state", "sum"},
+        {"state", "sum", "max", "mean", "min"},
     )
-    return list(stats.get(STAT_ID, []))
+    return list(stats.get(stat_id, []))
 
 
 def _assert_monotonic(rows: list[dict[str, Any]]) -> None:
@@ -509,3 +518,124 @@ async def test_sync_with_nothing_new_repairs_missing_unit_class(
 
     assert response["hours_written"] == 0
     assert (await _metadata(hass))["unit_class"] == "energy"
+
+
+# --- tariff periods, power and cost estimates (docs/adr/0006) ----------------
+
+NO_TAXES = {
+    "vat_reduced_percent": 0,
+    "vat_normal_percent": 0,
+    "vat_reduced_kwh_per_30_days": 0,
+    "vat_power_percent": 0,
+    "iec_per_kwh": 0,
+    "dgeg_per_month": 0,
+    "cav_per_month": 0,
+    "vat_cav_percent": 0,
+}
+
+
+def _plan(price: float = 0.2, power: float = 0.5) -> ConfigSubentry:
+    return ConfigSubentry(
+        data={
+            "option": "simple",
+            "cycle": "daily",
+            "power_per_day": power,
+            "energy_discount_percent": 0,
+            "price_simple": price,
+        },
+        subentry_type="plan",
+        title="Simple test plan",
+        unique_id=None,
+    )
+
+
+async def test_sync_writes_period_and_power_series(hass: HomeAssistant) -> None:
+    """Each cycle's periods add up to the total; power is energy x 4."""
+    response = await _sync(hass, history_days=10)
+
+    total = (await _rows(hass))[-1]["sum"]
+    assert response["derived_rows_written"] > 0
+    for cycle in Cycle:
+        sums = [
+            (
+                await _rows(hass, period_statistic_id(CPE, cycle, period))
+                or [{"sum": 0}]
+            )[-1]["sum"]
+            for period in Period
+        ]
+        assert sum(sums) == pytest.approx(total)
+    power = await _rows(hass, power_statistic_id(CPE))
+    assert len(power) == response["hours_written"]
+    assert all(row["max"] == pytest.approx(1.0) for row in power)  # 0.25 kWh x 4
+
+
+async def test_second_sync_adds_no_derived_rows(hass: HomeAssistant) -> None:
+    """Idempotence holds for the derived series too."""
+    await _sync(hass, history_days=10)
+
+    second = await _sync(hass)
+
+    assert second["derived_rows_written"] == 0
+    assert second["cost_rows_written"] == 0
+
+
+async def test_new_series_are_backfilled_on_the_next_sync(
+    hass: HomeAssistant,
+) -> None:
+    """An install whose period series are missing refetches the history once."""
+    first = await _sync(hass, history_days=10)
+    get_instance(hass).async_clear_statistics(
+        [period_statistic_id(CPE, Cycle.DAILY, Period.VAZIO)]
+    )
+    await async_wait_recording_done(hass)
+
+    second = await _sync(hass, history_days=10)
+
+    assert second["hours_written"] == 0
+    assert second["window_start"] == first["window_start"]
+    vazio = await _rows(hass, period_statistic_id(CPE, Cycle.DAILY, Period.VAZIO))
+    assert vazio
+    assert second["derived_rows_written"] == len(vazio)
+
+
+async def test_dry_run_writes_no_derived_series(hass: HomeAssistant) -> None:
+    """A dry run leaves every series untouched."""
+    await _sync(hass, history_days=10, dry_run=True)
+
+    assert await _rows(hass, power_statistic_id(CPE)) == []
+
+
+async def test_plan_cost_series_follows_sync_and_plan_changes(
+    hass: HomeAssistant, entry: MockConfigEntry
+) -> None:
+    """Costs are computed after a sync and recomputed when a plan changes."""
+    hass.config_entries.async_update_entry(entry, options=NO_TAXES)
+    hass.config_entries.async_add_subentry(entry, _plan(price=0.2, power=0.5))
+    await hass.async_block_till_done()
+    (plan_id,) = entry.subentries
+    cost_id = cost_statistic_id(CPE, plan_id)
+
+    response = await _sync(hass, history_days=10)
+
+    hours = await _rows(hass)
+    days = {
+        datetime.fromtimestamp(row["start"], tz=UTC).astimezone(LISBON).date()
+        for row in hours
+    }
+    expected = response["final_sum_kwh"] * 0.2 + len(days) * 0.5
+    assert response["cost_rows_written"] == len(hours)
+    assert (await _rows(hass, cost_id))[-1]["sum"] == pytest.approx(expected)
+
+    # Editing the plan recomputes without a token or a sync.
+    hass.config_entries.async_update_subentry(
+        entry, entry.subentries[plan_id], data={**_plan(price=0.3).data}
+    )
+    await hass.async_block_till_done()
+    await async_wait_recording_done(hass)
+    expected = response["final_sum_kwh"] * 0.3 + len(days) * 0.5
+    assert (await _rows(hass, cost_id))[-1]["sum"] == pytest.approx(expected)
+
+    # Removing the plan removes its series.
+    hass.config_entries.async_remove_subentry(entry, plan_id)
+    await hass.async_block_till_done()
+    assert await _rows(hass, cost_id) == []

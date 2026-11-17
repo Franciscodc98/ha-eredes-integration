@@ -10,28 +10,17 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from dataclasses import dataclass
-from datetime import UTC, datetime
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any
 
-from homeassistant.components.recorder import get_instance  # type: ignore[attr-defined]
-from homeassistant.components.recorder.models import (
-    StatisticData,
-    StatisticMeanType,
-    StatisticMetaData,
-)
-from homeassistant.components.recorder.statistics import (
-    async_add_external_statistics,
-    get_last_statistics,
-)
-from homeassistant.components.recorder.tasks import SynchronizeTask
-from homeassistant.const import UnitOfEnergy
+from homeassistant.components.recorder.models import StatisticData
+from homeassistant.components.recorder.statistics import async_add_external_statistics
 from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.util import dt as dt_util
-from homeassistant.util.unit_conversion import EnergyConverter
 
-from .const import DOMAIN
+from .const import CONF_CPE, DOMAIN
+from .costs import async_recompute_costs
 from .eredes_api import (
     ERedesAccessDeniedError,
     ERedesAuthenticationError,
@@ -49,13 +38,33 @@ from .planning import (
     ImportPlan,
     LastStatistic,
     aggregate_hours,
+    aggregate_period_hours,
+    aggregate_power_hours,
     build_import_plan,
     dedupe_readings,
+    import_cutoff,
     plan_window,
+    power_rows,
+    resume_point,
+    series_rows,
     split_into_blocks,
 )
+from .series import (
+    async_last_statistic,
+    async_recorder_barrier,
+    period_statistic_id,
+    period_statistic_metadata,
+    power_statistic_id,
+    power_statistic_metadata,
+    statistic_id,
+    statistic_metadata,
+)
+from .tariffs import Cycle, Period
 
 if TYPE_CHECKING:
+    from datetime import datetime
+
+    from homeassistant.config_entries import ConfigEntry
     from homeassistant.core import HomeAssistant
 
     from .eredes_api.models import ConsumptionReading
@@ -72,31 +81,7 @@ REQUEST_PAUSE_SECONDS = 1.0
 MAX_REPORTED_HOURS = 48
 
 
-def statistic_id(cpe: str) -> str:
-    """Return the external long-term-statistics id for a CPE's energy history.
-
-    External statistics must be ``<source>:<object_id>`` (colon-separated), not
-    an entity id — see CONTEXT.md and docs/adr/0002.
-    """
-    return f"{DOMAIN}:energy_{cpe[-8:].lower()}"
-
-
-def statistic_metadata(cpe: str) -> StatisticMetaData:
-    """Return the metadata of the external energy statistic.
-
-    ``unit_class`` must be ``"energy"``: the Energy dashboard's statistic picker
-    only offers statistics of that class, and one with no class is hidden.
-    """
-    return StatisticMetaData(
-        has_mean=False,
-        has_sum=True,
-        mean_type=StatisticMeanType.NONE,
-        name=f"E-REDES Energy ({cpe[-8:]})",
-        source=DOMAIN,
-        statistic_id=statistic_id(cpe),
-        unit_class=EnergyConverter.UNIT_CLASS,
-        unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
-    )
+__all__ = ["SyncResult", "async_sync", "statistic_id", "statistic_metadata"]
 
 
 @dataclass(frozen=True)
@@ -113,6 +98,8 @@ class SyncResult:
     first_reading: datetime | None
     last_reading: datetime | None
     plan: ImportPlan
+    derived_rows_written: int = 0
+    cost_rows_written: int = 0
 
     @property
     def hours_written(self) -> int:
@@ -150,46 +137,17 @@ class SyncResult:
             "dropped_partial_final_hour": plan.dropped_partial_final_hour is not None,
             "dropped_partial_final_hour_start": iso(plan.dropped_partial_final_hour),
             "reopened_last_hour": plan.reopened_last_hour,
+            "derived_rows_written": self.derived_rows_written,
+            "cost_rows_written": self.cost_rows_written,
         }
 
 
-def _locks(hass: HomeAssistant) -> dict[str, asyncio.Lock]:
+def sync_lock(hass: HomeAssistant, cpe: str) -> asyncio.Lock:
+    """Return the lock serialising syncs and cost recomputes of one CPE."""
     locks: dict[str, asyncio.Lock] = hass.data.setdefault(DOMAIN, {}).setdefault(
         "sync_locks", {}
     )
-    return locks
-
-
-async def _async_last_statistic(
-    hass: HomeAssistant, stat_id: str
-) -> LastStatistic | None:
-    rows = await get_instance(hass).async_add_executor_job(
-        get_last_statistics, hass, 1, stat_id, True, {"sum", "state"}
-    )
-    if not rows or stat_id not in rows or not rows[stat_id]:
-        return None
-    row = rows[stat_id][0]
-    state = row.get("state")
-    return LastStatistic(
-        # The recorder returns start as a UTC epoch.
-        start=datetime.fromtimestamp(row["start"], tz=UTC),
-        sum=float(row.get("sum") or 0.0),
-        state=float(state) if state is not None else None,
-    )
-
-
-async def _async_recorder_barrier(hass: HomeAssistant) -> None:
-    """Wait until every task queued on the recorder so far has run.
-
-    ``Recorder.async_block_till_done`` is not enough: it returns at once when
-    the queue is empty, which is also the case while the recorder thread is
-    still running the import it just dequeued. A ``SynchronizeTask`` queued
-    behind the import resolves only after the import has finished, because
-    the recorder runs its queue one task at a time, in order.
-    """
-    future: asyncio.Future[None] = hass.loop.create_future()
-    get_instance(hass).queue_task(SynchronizeTask(future))
-    await future
+    return locks.setdefault(cpe, asyncio.Lock())
 
 
 def _translate_api_error(err: ERedesError, *, at_first_block: bool) -> Exception:
@@ -230,22 +188,87 @@ def _translate_api_error(err: ERedesError, *, at_first_block: bool) -> Exception
     )
 
 
-async def async_sync(
+async def _async_series_lasts(
+    hass: HomeAssistant, cpe: str
+) -> tuple[
+    LastStatistic | None,
+    dict[tuple[Cycle, Period], LastStatistic | None],
+    LastStatistic | None,
+]:
+    """Read the newest stored hour of the total, period and power series."""
+    total = await async_last_statistic(hass, statistic_id(cpe))
+    periods = {
+        (cycle, period): await async_last_statistic(
+            hass, period_statistic_id(cpe, cycle, period)
+        )
+        for cycle in Cycle
+        for period in Period
+    }
+    power = await async_last_statistic(hass, power_statistic_id(cpe), mean=True)
+    return total, periods, power
+
+
+def _write_derived_series(
     hass: HomeAssistant,
     cpe: str,
+    *,
+    readings: list[ConsumptionReading],
+    cutoff: datetime | None,
+    periods_last: dict[tuple[Cycle, Period], LastStatistic | None],
+    power_last: LastStatistic | None,
+) -> int:
+    """Queue the period-energy and power rows up to ``cutoff``; return the count."""
+    written = 0
+    for cycle in Cycle:
+        buckets = aggregate_period_hours(readings, cycle)
+        for period in Period:
+            rows = series_rows(buckets[period], periods_last[(cycle, period)], cutoff)
+            if rows:
+                async_add_external_statistics(
+                    hass,
+                    period_statistic_metadata(cpe, cycle, period),
+                    [
+                        StatisticData(start=r.start, state=r.state, sum=r.sum)
+                        for r in rows
+                    ],
+                )
+                written += len(rows)
+    power = power_rows(
+        aggregate_power_hours(readings),
+        power_last.start if power_last is not None else None,
+        cutoff,
+    )
+    if power:
+        async_add_external_statistics(
+            hass,
+            power_statistic_metadata(cpe),
+            [
+                StatisticData(start=r.start, mean=r.mean, min=r.min, max=r.max)
+                for r in power
+            ],
+        )
+        written += len(power)
+    return written
+
+
+async def async_sync(
+    hass: HomeAssistant,
+    entry: ConfigEntry,
     token: str,
     *,
     dry_run: bool = False,
     history_days: int = DEFAULT_HISTORY_DAYS,
 ) -> SyncResult:
-    """Fetch the missing range for ``cpe`` and append it to its statistic.
+    """Fetch the missing range for the entry's CPE and append it to its series.
 
     Every block is fetched before anything is aggregated or written; any
     error aborts with nothing written (see ``BlockSequence`` for the one
-    tolerated case). The write is a single ``async_add_external_statistics``
-    call, awaited through the recorder queue so a sync run right after sees it.
+    tolerated case). Then the total, per-period and power series are queued
+    together, the recorder is awaited so a sync run right after sees them, and
+    the plans' cost series are recomputed from what is now stored.
     """
-    lock = _locks(hass).setdefault(cpe, asyncio.Lock())
+    cpe: str = entry.data[CONF_CPE]
+    lock = sync_lock(hass, cpe)
     if lock.locked():
         raise ServiceValidationError(
             translation_domain=DOMAIN, translation_key="sync_in_progress"
@@ -259,16 +282,19 @@ async def async_sync(
             )
 
         stat_id = statistic_id(cpe)
-        last = await _async_last_statistic(hass, stat_id)
-        window_start, window_end = plan_window(dt_util.utcnow(), last, history_days)
+        last, periods_last, power_last = await _async_series_lasts(hass, cpe)
+        # A series added by an upgrade has no rows yet: widen the window so it
+        # is backfilled; series already ahead simply skip what they have.
+        resume = resume_point([last, *periods_last.values(), power_last])
+        window_start, window_end = plan_window(dt_util.utcnow(), resume, history_days)
         blocks = split_into_blocks(window_start, window_end)
         _LOGGER.debug(
-            "Sync %s: window %s → %s in %d blocks (resume: %s, dry run: %s)",
+            "Sync %s: window %s -> %s in %d blocks (resume: %s, dry run: %s)",
             stat_id,
             window_start.isoformat(),
             window_end.isoformat(),
             len(blocks),
-            last is not None,
+            resume is not None,
             dry_run,
         )
 
@@ -296,7 +322,7 @@ async def async_sync(
                     BlockOutcome.DATA if consumption.readings else BlockOutcome.EMPTY
                 )
             _LOGGER.debug(
-                "Sync %s: block %d/%d %s → %s: %s",
+                "Sync %s: block %d/%d %s -> %s: %s",
                 stat_id,
                 index + 1,
                 len(blocks),
@@ -355,14 +381,26 @@ async def async_sync(
                 for row in plan.rows
             ],
         )
-        # The call above only queues the import; wait for the recorder so the
-        # next sync reads this one's last hour and appends nothing twice.
-        await _async_recorder_barrier(hass)
+        derived = _write_derived_series(
+            hass,
+            cpe,
+            readings=unique,
+            cutoff=import_cutoff(plan, last),
+            periods_last=periods_last,
+            power_last=power_last,
+        )
+        # The calls above only queue the imports; wait for the recorder so the
+        # next sync reads this one's last hours and appends nothing twice.
+        await async_recorder_barrier(hass)
+        costs = await async_recompute_costs(hass, entry)
         _LOGGER.info(
-            "Sync %s: wrote %d hour(s), %.3f kWh added, sum now %.3f kWh",
+            "Sync %s: wrote %d hour(s), %.3f kWh added, sum now %.3f kWh; "
+            "%d derived row(s), %d cost row(s)",
             stat_id,
             len(plan.rows),
             plan.kwh_added,
             plan.final_sum,
+            derived,
+            costs,
         )
-        return result
+        return replace(result, derived_rows_written=derived, cost_rows_written=costs)

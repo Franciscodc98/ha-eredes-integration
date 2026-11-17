@@ -17,12 +17,19 @@ from custom_components.eredes.planning import (
     HourBucket,
     LastStatistic,
     aggregate_hours,
+    aggregate_period_hours,
+    aggregate_power_hours,
     build_import_plan,
     dedupe_readings,
+    import_cutoff,
     plan_window,
+    power_rows,
+    resume_point,
+    series_rows,
     split_into_blocks,
     utc_to_lisbon_naive,
 )
+from custom_components.eredes.tariffs import Cycle, Period
 
 
 def _utc(*args: int) -> datetime:
@@ -59,7 +66,7 @@ def test_window_with_statistics_starts_two_days_before_last_hour() -> None:
     """A resume re-requests a buffer before the last stored hour."""
     last = LastStatistic(start=_utc(2026, 8, 8, 22), sum=10.0, state=1.0)
 
-    start, _ = plan_window(_utc(2026, 8, 10, 12), last, 365)
+    start, _ = plan_window(_utc(2026, 8, 10, 12), last.start, 365)
 
     # 22:00 UTC is 23:00 WEST on the 8th; minus two days, floored.
     assert start == datetime(2026, 8, 6, 0, 0)
@@ -347,3 +354,61 @@ def test_last_stored_hour_not_reopened_otherwise(stored_bucket: HourBucket) -> N
 
     assert not plan.reopened_last_hour
     assert [r.start for r in plan.rows] == [_utc(2026, 1, 1, 2)]
+
+
+# --- derived series ----------------------------------------------------------
+
+
+def test_resume_point_is_earliest_or_none_if_any_series_is_new() -> None:
+    """Every series must be covered; a missing one needs the full history."""
+    a = LastStatistic(start=_utc(2026, 1, 2), sum=1.0, state=1.0)
+    b = LastStatistic(start=_utc(2026, 1, 1), sum=1.0, state=1.0)
+
+    assert resume_point([a, b]) == _utc(2026, 1, 1)
+    assert resume_point([a, None]) is None
+
+
+def test_period_split_happens_per_quarter_inside_the_hour() -> None:
+    """Winter daily cycle: 10:00-10:30 is ponta, 10:30-11:00 cheias."""
+    readings = _quarters(_utc(2026, 1, 14, 10), 4, kwh=0.25)
+
+    split = aggregate_period_hours(readings, Cycle.DAILY)
+
+    assert split[Period.PONTA] == [HourBucket(_utc(2026, 1, 14, 10), 0.5, 2)]
+    assert split[Period.CHEIAS] == [HourBucket(_utc(2026, 1, 14, 10), 0.5, 2)]
+    assert split[Period.VAZIO] == []
+
+
+def test_power_is_quarter_energy_times_four() -> None:
+    """Quarter-hours of 0.25 and 1.0 kWh are 1 kW and 4 kW averages."""
+    start = _utc(2026, 1, 1, 0)
+    readings = [
+        ConsumptionReading(timestamp=start, value_wh=250),
+        ConsumptionReading(timestamp=start + timedelta(minutes=15), value_wh=1000),
+    ]
+
+    (row,) = aggregate_power_hours(readings)
+
+    assert (row.min, row.max, row.mean) == pytest.approx((1.0, 4.0, 2.5))
+
+
+def test_series_rows_continue_after_last_and_stop_at_cutoff() -> None:
+    """A derived series appends after its own last hour, never past the total."""
+    buckets = [_bucket(_utc(2026, 1, 1, h), kwh=0.5, quarters=2) for h in range(5)]
+    last = LastStatistic(start=_utc(2026, 1, 1, 0), sum=3.0, state=0.5)
+
+    rows = series_rows(buckets, last, cutoff=_utc(2026, 1, 1, 3))
+
+    assert [r.start for r in rows] == [_utc(2026, 1, 1, h) for h in (1, 2, 3)]
+    assert [r.sum for r in rows] == [3.5, 4.0, 4.5]
+
+
+def test_import_cutoff_follows_the_total() -> None:
+    """The cutoff is the total's newest written hour, else its last stored one."""
+    last = LastStatistic(start=_utc(2026, 1, 1, 5), sum=1.0, state=1.0)
+    plan = build_import_plan([_bucket(_utc(2026, 1, 1, h)) for h in range(8)], last)
+
+    assert import_cutoff(plan, last) == _utc(2026, 1, 1, 7)
+    assert import_cutoff(build_import_plan([], last), last) == _utc(2026, 1, 1, 5)
+    assert series_rows([_bucket(_utc(2026, 1, 1, 0))], None, None) == []
+    assert power_rows([], None, None) == []

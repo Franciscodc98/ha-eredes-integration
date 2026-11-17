@@ -19,6 +19,7 @@ from enum import Enum
 from typing import TYPE_CHECKING
 
 from .eredes_api.client import LISBON
+from .tariffs import Cycle, Period, classify
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
@@ -99,21 +100,35 @@ def _floor_to_midnight(naive: datetime) -> datetime:
     return naive.replace(hour=0, minute=0, second=0, microsecond=0)
 
 
+def resume_point(lasts: Iterable[LastStatistic | None]) -> datetime | None:
+    """Return the earliest last-stored hour, or None if any series is empty.
+
+    Every statistic a sync feeds must be covered by the window: a series that
+    does not exist yet (e.g. added by an upgrade) needs the full history.
+    """
+    starts: list[datetime] = []
+    for last in lasts:
+        if last is None:
+            return None
+        starts.append(last.start)
+    return min(starts) if starts else None
+
+
 def plan_window(
     now: datetime,
-    last: LastStatistic | None,
+    resume_after: datetime | None,
     history_days: int,
 ) -> tuple[datetime, datetime]:
     """Return the ``(start, end)`` request window as naive Lisbon datetimes.
 
-    With stored statistics the window opens ``REFETCH_BUFFER_DAYS`` before the
-    last stored hour; otherwise ``history_days`` before now. The start is
-    floored to local midnight so the first imported hour is not cut short by
-    an arbitrary minute.
+    With stored statistics the window opens ``REFETCH_BUFFER_DAYS`` before
+    ``resume_after`` (the earliest last stored hour); otherwise
+    ``history_days`` before now. The start is floored to local midnight so the
+    first imported hour is not cut short by an arbitrary minute.
     """
     end = utc_to_lisbon_naive(now)
-    if last is not None:
-        start = utc_to_lisbon_naive(last.start) - timedelta(days=REFETCH_BUFFER_DAYS)
+    if resume_after is not None:
+        start = utc_to_lisbon_naive(resume_after) - timedelta(days=REFETCH_BUFFER_DAYS)
     else:
         start = end - timedelta(days=history_days)
     return _floor_to_midnight(start), end
@@ -335,3 +350,105 @@ def build_import_plan(
         dropped_partial_final_hour=dropped,
         reopened_last_hour=reopened,
     )
+
+
+# --- derived series ----------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class PowerRow:
+    """Average power of the 15-minute intervals of one UTC hour, in kW."""
+
+    start: datetime
+    mean: float
+    min: float
+    max: float
+
+
+def _hour_of(reading: ConsumptionReading) -> datetime:
+    return reading.timestamp.astimezone(UTC).replace(minute=0, second=0, microsecond=0)
+
+
+def aggregate_period_hours(
+    readings: Iterable[ConsumptionReading], cycle: Cycle
+) -> dict[Period, list[HourBucket]]:
+    """Split readings by tariff period under ``cycle``, then roll up per hour.
+
+    Classification happens per 15-minute reading, before aggregation, because
+    some period boundaries fall inside an hour (e.g. 10:30).
+    """
+    split: dict[Period, list[ConsumptionReading]] = {period: [] for period in Period}
+    for reading in readings:
+        split[classify(reading.timestamp, cycle)].append(reading)
+    return {period: aggregate_hours(items) for period, items in split.items()}
+
+
+def aggregate_power_hours(readings: Iterable[ConsumptionReading]) -> list[PowerRow]:
+    """Return the mean, min and max 15-minute average power of each UTC hour.
+
+    A quarter-hour's average power is its energy x 4 (kWh over 0.25 h). The
+    portal's "potência máxima tomada" is understood to be the monthly maximum
+    of this value — unverified, see docs/adr/0006.
+    """
+    by_hour: dict[datetime, list[float]] = {}
+    for reading in readings:
+        by_hour.setdefault(_hour_of(reading), []).append(reading.value_kwh * 4)
+    return [
+        PowerRow(
+            start=hour,
+            mean=sum(values) / len(values),
+            min=min(values),
+            max=max(values),
+        )
+        for hour, values in sorted(by_hour.items())
+    ]
+
+
+def import_cutoff(plan: ImportPlan, last: LastStatistic | None) -> datetime | None:
+    """Return the newest hour every series may be written up to.
+
+    That is the total statistic's newest written hour — after the partial
+    final hour was dropped — or its last stored hour if nothing new was
+    written. Derived series never run ahead of the total.
+    """
+    if plan.rows:
+        return plan.rows[-1].start
+    return last.start if last is not None else None
+
+
+def series_rows(
+    buckets: list[HourBucket],
+    last: LastStatistic | None,
+    cutoff: datetime | None,
+) -> list[StatisticRow]:
+    """Rows to append to a derived energy series: after its last hour, up to cutoff.
+
+    A derived series may legitimately hold fewer than four quarters in an hour
+    (an hour split between two periods), so completeness is judged on the
+    total statistic, through ``cutoff``, not here.
+    """
+    if cutoff is None:
+        return []
+    running = last.sum if last is not None else 0.0
+    rows: list[StatisticRow] = []
+    for bucket in buckets:
+        if last is not None and bucket.start <= last.start:
+            continue
+        if bucket.start > cutoff:
+            break
+        running += bucket.kwh
+        rows.append(StatisticRow(start=bucket.start, state=bucket.kwh, sum=running))
+    return rows
+
+
+def power_rows(
+    rows: list[PowerRow], last_start: datetime | None, cutoff: datetime | None
+) -> list[PowerRow]:
+    """Power rows after ``last_start``, up to ``cutoff``."""
+    if cutoff is None:
+        return []
+    return [
+        row
+        for row in rows
+        if (last_start is None or row.start > last_start) and row.start <= cutoff
+    ]

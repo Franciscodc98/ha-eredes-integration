@@ -21,7 +21,7 @@
   },
   "options": {
     "step": {
-      "init": {
+      "sync": {
         "title": "Sincronizar agora",
         "description": "Cole um token acabado de obter para importar o consumo que falta no painel Energia. O token é usado só nesta sincronização e nunca é guardado.\n\nPara o obter: entre em {setup_url}, abra as ferramentas de desenvolvimento (F12), vá a Application > Cookies e copie o valor do cookie 'aat'. O token expira pouco depois do login, por isso sincronize logo.",
         "data": {
@@ -33,6 +33,31 @@
           "token": "O valor do cookie 'aat', 'aat=…', ou o cabeçalho Cookie completo.",
           "dry_run": "Obtém e calcula tudo, mas não escreve nada.",
           "history_days": "Até onde recua a primeira importação. Ignorado quando já há estatísticas."
+        }
+      },
+      "init": {
+        "title": "E-REDES",
+        "menu_options": {
+          "sync": "Sincronizar agora",
+          "taxes": "Impostos e taxas (estimativas de custo)"
+        }
+      },
+      "taxes": {
+        "title": "Impostos e taxas",
+        "description": "Usados na estimativa de custo de todos os planos. Os valores por omissão seguem uma fatura de 2026 para potências até 6,9 kVA; confirme-os na sua fatura. As taxas são percentagens.",
+        "data": {
+          "vat_reduced_percent": "Taxa reduzida de IVA",
+          "vat_normal_percent": "Taxa normal de IVA",
+          "vat_reduced_kwh_per_30_days": "kWh com taxa reduzida por 30 dias",
+          "vat_power_percent": "IVA da potência",
+          "iec_per_kwh": "IEC (imposto especial de consumo) por kWh",
+          "dgeg_per_month": "Taxa DGEG por mês",
+          "cav_per_month": "Contribuição audiovisual (CAV) por mês",
+          "vat_cav_percent": "IVA da CAV"
+        },
+        "data_description": {
+          "vat_reduced_kwh_per_30_days": "200 kWh (300 para famílias numerosas), proporcional aos dias do mês.",
+          "vat_power_percent": "A taxa reduzida só se aplica até 3,45 kVA."
         }
       }
     },
@@ -125,6 +150,75 @@
     },
     "no_entries": {
       "message": "Não há nenhuma entrada E-REDES configurada e carregada."
+    }
+  },
+  "config_subentries": {
+    "plan": {
+      "initiate_flow": {
+        "user": "Adicionar plano tarifário",
+        "reconfigure": "Editar plano tarifário"
+      },
+      "entry_type": "Plano tarifário",
+      "step": {
+        "user": {
+          "title": "Plano tarifário",
+          "description": "Uma oferta para estimar custos: o seu contrato atual, a tarifa regulada ou a oferta de outro comercializador. Preços sem IVA.",
+          "data": {
+            "name": "Nome",
+            "option": "Opção tarifária",
+            "cycle": "Ciclo",
+            "power_per_day": "Preço da potência por dia",
+            "energy_discount_percent": "Desconto na energia"
+          },
+          "data_description": {
+            "cycle": "Só para bi e tri-horário. Na dúvida, crie um plano por ciclo e compare.",
+            "power_per_day": "Para a sua potência contratada, sem IVA.",
+            "energy_discount_percent": "Percentagem de desconto só no preço da energia (não na potência), antes do IVA. Deixe 0 se não tiver."
+          }
+        },
+        "reconfigure": {
+          "title": "Plano tarifário",
+          "description": "Uma oferta para estimar custos: o seu contrato atual, a tarifa regulada ou a oferta de outro comercializador. Preços sem IVA.",
+          "data": {
+            "name": "Nome",
+            "option": "Opção tarifária",
+            "cycle": "Ciclo",
+            "power_per_day": "Preço da potência por dia",
+            "energy_discount_percent": "Desconto na energia"
+          },
+          "data_description": {
+            "cycle": "Só para bi e tri-horário. Na dúvida, crie um plano por ciclo e compare.",
+            "power_per_day": "Para a sua potência contratada, sem IVA.",
+            "energy_discount_percent": "Percentagem de desconto só no preço da energia (não na potência), antes do IVA. Deixe 0 se não tiver."
+          }
+        },
+        "prices": {
+          "title": "Preços da energia",
+          "description": "Preços da energia em €/kWh, sem IVA e antes de qualquer desconto.",
+          "data": {
+            "price_simple": "Preço da energia",
+            "price_vazio": "Vazio",
+            "price_fora_vazio": "Fora de vazio",
+            "price_cheias": "Cheias",
+            "price_ponta": "Ponta"
+          }
+        }
+      }
+    }
+  },
+  "selector": {
+    "option": {
+      "options": {
+        "simple": "Simples (um só preço)",
+        "bi_hourly": "Bi-horária (vazio / fora de vazio)",
+        "tri_hourly": "Tri-horária (vazio / cheias / ponta)"
+      }
+    },
+    "cycle": {
+      "options": {
+        "daily": "Ciclo diário (mesmas horas todos os dias)",
+        "weekly": "Ciclo semanal (fins de semana quase todos em vazio)"
+      }
     }
   }
 }

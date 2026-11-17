@@ -1,6 +1,6 @@
 [project]
 name = "ha-eredes"
-version = "2.0.1"
+version = "2.1.0"
 description = "E-REDES integration for Home Assistant"
 readme = "README.md"
 license = {text = "MIT"}

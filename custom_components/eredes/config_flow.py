@@ -1,10 +1,11 @@
 """Config and "Sync now" flows for the E-REDES integration.
 
 The config flow asks for the CPE only; no token is ever stored. The options
-flow is repurposed as a "Sync now" form: it takes a freshly pasted token, runs
-the same sync as the ``eredes.sync`` action and shows the summary. Unlike an
-action call, flow input is not fired as a ``call_service`` event, so the token
-does not end up in the recorder database (docs/adr/0005).
+flow is a menu. "Sync now" takes a freshly pasted token, runs the same sync as
+the ``eredes.sync`` action and shows the summary; unlike an action call, flow
+input is not fired as a ``call_service`` event, so the token does not end up
+in the recorder database (docs/adr/0005). "Taxes" edits the levies used by
+cost estimates. Tariff plans are config subentries (docs/adr/0006).
 """
 
 from __future__ import annotations
@@ -14,10 +15,13 @@ from typing import Any
 
 import voluptuous as vol
 from homeassistant.config_entries import (
+    SOURCE_USER,
     ConfigEntry,
     ConfigFlow,
     ConfigFlowResult,
+    ConfigSubentryFlow,
     OptionsFlow,
+    SubentryFlowResult,
 )
 from homeassistant.core import callback
 from homeassistant.exceptions import HomeAssistantError
@@ -26,6 +30,9 @@ from homeassistant.helpers.selector import (
     NumberSelector,
     NumberSelectorConfig,
     NumberSelectorMode,
+    SelectSelector,
+    SelectSelectorConfig,
+    SelectSelectorMode,
     TextSelector,
     TextSelectorConfig,
     TextSelectorType,
@@ -39,9 +46,24 @@ from .const import (
     CONF_CPE,
     CPE_PATTERN,
     DOMAIN,
+    OPT_CAV_PER_MONTH,
+    OPT_DGEG_PER_MONTH,
+    OPT_IEC_PER_KWH,
+    OPT_REDUCED_KWH,
+    OPT_VAT_CAV,
+    OPT_VAT_NORMAL,
+    OPT_VAT_POWER,
+    OPT_VAT_REDUCED,
+    PLAN_CYCLE,
+    PLAN_DISCOUNT,
+    PLAN_OPTION,
+    PLAN_POWER_PER_DAY,
+    PLAN_PRICE_KEYS,
+    SUBENTRY_PLAN,
     normalize_cpe,
 )
 from .sync import DEFAULT_HISTORY_DAYS, MAX_HISTORY_DAYS, async_sync
+from .tariffs import Cycle, TariffOption, Taxes
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -58,6 +80,87 @@ SYNC_DATA_SCHEMA = vol.Schema(
                 min=1, max=MAX_HISTORY_DAYS, step=1, mode=NumberSelectorMode.BOX
             )
         ),
+    }
+)
+
+
+PLAN_NAME = "name"
+
+
+def _number(
+    minimum: float, maximum: float, step: float | str, unit: str | None = None
+) -> NumberSelector:
+    return NumberSelector(
+        NumberSelectorConfig(
+            min=minimum,
+            max=maximum,
+            step=step,
+            mode=NumberSelectorMode.BOX,
+            unit_of_measurement=unit,
+        )
+    )
+
+
+PRICE_SELECTOR = _number(0, 10, "any", "€/kWh")
+
+PLAN_STRUCTURE_SCHEMA = vol.Schema(
+    {
+        vol.Required(PLAN_NAME): TextSelector(),
+        vol.Required(PLAN_OPTION): SelectSelector(
+            SelectSelectorConfig(
+                options=[option.value for option in TariffOption],
+                translation_key=PLAN_OPTION,
+                mode=SelectSelectorMode.LIST,
+            )
+        ),
+        vol.Required(PLAN_CYCLE, default=Cycle.DAILY.value): SelectSelector(
+            SelectSelectorConfig(
+                options=[cycle.value for cycle in Cycle],
+                translation_key=PLAN_CYCLE,
+                mode=SelectSelectorMode.LIST,
+            )
+        ),
+        vol.Required(PLAN_POWER_PER_DAY): _number(0, 10, "any", "€/day"),
+        vol.Required(PLAN_DISCOUNT, default=0): _number(0, 100, 0.01, "%"),
+    }
+)
+
+# Energy price fields asked for each option (subentry data keys).
+PRICE_FIELDS: dict[TariffOption, tuple[str, ...]] = {
+    TariffOption.SIMPLE: (PLAN_PRICE_KEYS["simple"],),
+    TariffOption.BI_HOURLY: (
+        PLAN_PRICE_KEYS["vazio"],
+        PLAN_PRICE_KEYS["fora_vazio"],
+    ),
+    TariffOption.TRI_HOURLY: (
+        PLAN_PRICE_KEYS["vazio"],
+        PLAN_PRICE_KEYS["cheias"],
+        PLAN_PRICE_KEYS["ponta"],
+    ),
+}
+
+_DEFAULT_TAXES = Taxes()
+TAX_DEFAULTS: dict[str, float] = {
+    OPT_VAT_REDUCED: _DEFAULT_TAXES.vat_reduced * 100,
+    OPT_VAT_NORMAL: _DEFAULT_TAXES.vat_normal * 100,
+    OPT_REDUCED_KWH: _DEFAULT_TAXES.reduced_kwh_per_30_days,
+    OPT_VAT_POWER: _DEFAULT_TAXES.vat_power * 100,
+    OPT_IEC_PER_KWH: _DEFAULT_TAXES.iec_per_kwh,
+    OPT_DGEG_PER_MONTH: _DEFAULT_TAXES.dgeg_per_month,
+    OPT_CAV_PER_MONTH: _DEFAULT_TAXES.cav_per_month,
+    OPT_VAT_CAV: _DEFAULT_TAXES.vat_cav * 100,
+}
+
+TAXES_SCHEMA = vol.Schema(
+    {
+        vol.Required(OPT_VAT_REDUCED): _number(0, 100, 0.1, "%"),
+        vol.Required(OPT_VAT_NORMAL): _number(0, 100, 0.1, "%"),
+        vol.Required(OPT_REDUCED_KWH): _number(0, 10000, 1, "kWh"),
+        vol.Required(OPT_VAT_POWER): _number(0, 100, 0.1, "%"),
+        vol.Required(OPT_IEC_PER_KWH): _number(0, 1, "any", "€/kWh"),
+        vol.Required(OPT_DGEG_PER_MONTH): _number(0, 100, 0.01, "€"),
+        vol.Required(OPT_CAV_PER_MONTH): _number(0, 100, 0.01, "€"),
+        vol.Required(OPT_VAT_CAV): _number(0, 100, 0.1, "%"),
     }
 )
 
@@ -96,17 +199,31 @@ class ERedesConfigFlow(ConfigFlow, domain=DOMAIN):
     @staticmethod
     @callback
     def async_get_options_flow(_config_entry: ConfigEntry) -> OptionsFlow:
-        """Return the "Sync now" flow."""
-        return ERedesSyncFlow()
+        """Return the options flow: "Sync now" and the tax settings."""
+        return ERedesOptionsFlow()
+
+    @classmethod
+    @callback
+    def async_get_supported_subentry_types(
+        cls, _config_entry: ConfigEntry
+    ) -> dict[str, type[ConfigSubentryFlow]]:
+        """Tariff plans to estimate costs for (docs/adr/0006)."""
+        return {SUBENTRY_PLAN: PlanSubentryFlow}
 
 
-class ERedesSyncFlow(OptionsFlow):
-    """Run a sync from the UI. Stores nothing in the entry's options."""
+class ERedesOptionsFlow(OptionsFlow):
+    """A menu: run a sync, or edit the taxes used by cost estimates."""
 
     async def async_step_init(
+        self, _user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Show the menu."""
+        return self.async_show_menu(step_id="init", menu_options=["sync", "taxes"])
+
+    async def async_step_sync(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
-        """Ask for the token and sync options, then sync."""
+        """Ask for the token and sync options, then sync. Stores nothing."""
         errors: dict[str, str] = {}
         placeholders: dict[str, str] = {
             "setup_url": BASE_URL,
@@ -118,7 +235,7 @@ class ERedesSyncFlow(OptionsFlow):
             try:
                 result = await async_sync(
                     self.hass,
-                    self.config_entry.data[CONF_CPE],
+                    self.config_entry,
                     user_input[ATTR_TOKEN],
                     dry_run=bool(user_input.get(ATTR_DRY_RUN, False)),
                     history_days=int(
@@ -141,8 +258,85 @@ class ERedesSyncFlow(OptionsFlow):
 
         # Never echo the token back into the form.
         return self.async_show_form(
-            step_id="init",
+            step_id="sync",
             data_schema=SYNC_DATA_SCHEMA,
             errors=errors,
             description_placeholders=placeholders,
+        )
+
+    async def async_step_taxes(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Edit the taxes; saving triggers a cost recompute (update listener)."""
+        if user_input is not None:
+            return self.async_create_entry(data=user_input)
+        return self.async_show_form(
+            step_id="taxes",
+            data_schema=self.add_suggested_values_to_schema(
+                TAXES_SCHEMA, {**TAX_DEFAULTS, **self.config_entry.options}
+            ),
+        )
+
+
+class PlanSubentryFlow(ConfigSubentryFlow):
+    """Add or edit a tariff plan: name and structure first, then prices."""
+
+    def __init__(self) -> None:
+        """Start with no answers."""
+        self._data: dict[str, Any] = {}
+
+    async def async_step_user(
+        self, user_input: dict[str, Any] | None = None
+    ) -> SubentryFlowResult:
+        """Name, option, cycle, power price and discount of a new plan."""
+        return await self._async_step_structure(user_input, {})
+
+    async def async_step_reconfigure(
+        self, user_input: dict[str, Any] | None = None
+    ) -> SubentryFlowResult:
+        """Edit an existing plan, starting from its current values."""
+        subentry = self._get_reconfigure_subentry()
+        current = {**subentry.data, PLAN_NAME: subentry.title}
+        return await self._async_step_structure(user_input, current)
+
+    async def _async_step_structure(
+        self, user_input: dict[str, Any] | None, current: dict[str, Any]
+    ) -> SubentryFlowResult:
+        if user_input is not None:
+            self._data = {**current, **user_input}
+            return await self.async_step_prices()
+        step_id = "user" if self.source == SOURCE_USER else "reconfigure"
+        return self.async_show_form(
+            step_id=step_id,
+            data_schema=self.add_suggested_values_to_schema(
+                PLAN_STRUCTURE_SCHEMA, {PLAN_DISCOUNT: 0, **current}
+            ),
+        )
+
+    async def async_step_prices(
+        self, user_input: dict[str, Any] | None = None
+    ) -> SubentryFlowResult:
+        """Energy prices for the periods the chosen option distinguishes."""
+        option = TariffOption(self._data[PLAN_OPTION])
+        fields = PRICE_FIELDS[option]
+        if user_input is not None:
+            data = {
+                key: value
+                for key, value in self._data.items()
+                if key != PLAN_NAME and key not in PLAN_PRICE_KEYS.values()
+            }
+            data.update({field: user_input[field] for field in fields})
+            title = str(self._data[PLAN_NAME]).strip() or option.value
+            if self.source == SOURCE_USER:
+                return self.async_create_entry(title=title, data=data)
+            return self.async_update_and_abort(
+                self._get_entry(),
+                self._get_reconfigure_subentry(),
+                title=title,
+                data=data,
+            )
+        schema = vol.Schema({vol.Required(field): PRICE_SELECTOR for field in fields})
+        return self.async_show_form(
+            step_id="prices",
+            data_schema=self.add_suggested_values_to_schema(schema, self._data),
         )

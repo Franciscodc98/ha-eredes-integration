@@ -30,7 +30,8 @@ from .const import (
     SERVICE_SYNC,
     normalize_cpe,
 )
-from .sync import DEFAULT_HISTORY_DAYS, MAX_HISTORY_DAYS, async_sync
+from .costs import async_recompute_costs
+from .sync import DEFAULT_HISTORY_DAYS, MAX_HISTORY_DAYS, async_sync, sync_lock
 
 if TYPE_CHECKING:
     from homeassistant.core import HomeAssistant
@@ -82,7 +83,7 @@ async def _async_handle_sync(call: ServiceCall) -> ServiceResponse:
     entry = _resolve_entry(call.hass, call.data.get(ATTR_CPE))
     result = await async_sync(
         call.hass,
-        entry.data[CONF_CPE],
+        entry,
         call.data[ATTR_TOKEN],
         dry_run=call.data[ATTR_DRY_RUN],
         history_days=call.data[ATTR_HISTORY_DAYS],
@@ -102,9 +103,20 @@ async def async_setup(hass: HomeAssistant, _config: ConfigType) -> bool:
     return True
 
 
-async def async_setup_entry(_hass: HomeAssistant, _entry: ERedesConfigEntry) -> bool:
-    """Set up a CPE. Nothing to start: syncing is on demand."""
+async def async_setup_entry(_hass: HomeAssistant, entry: ERedesConfigEntry) -> bool:
+    """Set up a CPE. Nothing to poll: syncing is on demand.
+
+    Plans (subentries) and taxes (options) only change the derived cost
+    series, so an update recomputes those from stored data — no token needed.
+    """
+    entry.async_on_unload(entry.add_update_listener(_async_entry_updated))
     return True
+
+
+async def _async_entry_updated(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    """Recompute the cost series after a plan or tax change."""
+    async with sync_lock(hass, entry.data[CONF_CPE]):
+        await async_recompute_costs(hass, entry)
 
 
 async def async_unload_entry(_hass: HomeAssistant, _entry: ERedesConfigEntry) -> bool:
