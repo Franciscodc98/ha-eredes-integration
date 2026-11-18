@@ -64,6 +64,16 @@ _Avoid_: "schedule" for the contract choice (it names the tables).
 A user-defined offer to estimate costs for (a config subentry): option, cycle, power
 price per day, energy prices without VAT, and an optional discount on energy.
 
+**OMIE price**:
+The Iberian day-ahead market's marginal price for Portugal, per 15-minute period
+(hourly before the market moved to quarter-hours), in €/MWh. Periods count from
+**Madrid** midnight. The basis of market-indexed offers. See `docs/adr/0007`.
+
+**Indexed plan**:
+A tariff plan whose energy price follows the OMIE price of each interval:
+`OMIE x (1 + losses) x K1 + K2 + TAR energy`.
+_Avoid_: "dynamic tariff" (ambiguous).
+
 ## Authentication
 
 **Access token (`aat`)**:

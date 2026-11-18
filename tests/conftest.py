@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from typing import TYPE_CHECKING
 from unittest.mock import patch
 
@@ -16,6 +16,7 @@ from custom_components.eredes.eredes_api import (
     ERedesError,
     ERedesUnsuccessfulResponseError,
 )
+from custom_components.eredes.omie import MADRID, OmieError
 
 if TYPE_CHECKING:
     from collections.abc import Generator
@@ -130,3 +131,45 @@ def mock_client(portal: FakePortal) -> Generator[FakePortal]:
 
     with patch("custom_components.eredes.sync.ERedesClient", _Client):
         yield portal
+
+
+@dataclass
+class FakeOmie:
+    """Synthetic OMIE files: a flat price per MWh, optional failing days."""
+
+    price_mwh: float = 100.0
+    fail_from: date | None = None
+    requested: list[date] = field(default_factory=list)
+
+    def file_for(self, day: date) -> str:
+        """Build the day's file with the right number of 15-minute periods."""
+        start = datetime(day.year, day.month, day.day, tzinfo=MADRID)
+        # Same-tzinfo subtraction is wall-clock; compare in UTC for DST days.
+        end = start + timedelta(days=1)
+        periods = round(
+            (end.astimezone(UTC) - start.astimezone(UTC)).total_seconds() / 900
+        )
+        lines = ["MARGINALPDBCPT;"] + [
+            f"{day.year};{day.month:02};{day.day:02};{n};{self.price_mwh};"
+            f"{self.price_mwh};"
+            for n in range(1, periods + 1)
+        ]
+        return "\n".join(lines) + "\n"
+
+    async def fetch(self, _session: object, day: date) -> str:
+        """Stand-in for omie.async_fetch_day."""
+        self.requested.append(day)
+        if self.fail_from is not None and day >= self.fail_from:
+            raise OmieError("synthetic outage")
+        return self.file_for(day)
+
+
+@pytest.fixture(autouse=True)
+def omie() -> Generator[FakeOmie]:
+    """Never reach omie.es in tests; serve synthetic price files instead."""
+    fake = FakeOmie()
+    with (
+        patch("custom_components.eredes.market.async_fetch_day", fake.fetch),
+        patch("custom_components.eredes.market.OMIE_PAUSE_SECONDS", 0),
+    ):
+        yield fake

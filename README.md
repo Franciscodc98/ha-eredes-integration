@@ -169,12 +169,37 @@ To check the model, create a plan identical to your current contract and compare
 month with your invoice. Prices are entered by hand: the integration only talks to the
 E-REDES portal. Regulated prices are published by ERSE.
 
+### Market-indexed offers (OMIE)
+
+A plan's **energy pricing** can be *Indexed to OMIE* instead of fixed. Each sync then
+also downloads the public OMIE day-ahead prices for Portugal (from `www.omie.es`, the
+only other host the integration contacts; no data of yours is sent). It values every
+15-minute reading at its own market price and stores the result as
+`eredes:market_<sfx>`. An indexed plan is estimated, per 15 minutes, as:
+
+`OMIE price x (1 + losses) x K1 + K2 + TAR energy`, plus a daily fixed charge.
+
+K1, K2 and losses come from the offer's standard sheet (*ficha normalizada*); TAR is the
+ERSE network access tariff for the year. Example, from EDP's "Eletricidade Indexada
+Horária" sheet for 2026 at 5.75 kVA, simple option:
+
+| Field | Value |
+|---|---|
+| Power charge per day | 0.4035 (0.1171 fixed + 0.2864 TAR power) |
+| K1 | 1.08 |
+| K2 | 0.0185 |
+| Network losses | 16.4 (EDP's published average) |
+| TAR energy | 0.0607 (bi-hourly: vazio 0.0158, fora de vazio 0.0835; tri-hourly: vazio 0.0158, cheias 0.0412, ponta 0.2452) |
+
+If OMIE cannot be reached, the sync still imports your consumption; the market series
+catches up on the next sync.
+
 ### Dashboard
 
 [`docs/dashboard.yaml`](docs/dashboard.yaml) is a ready-made view with:
 
 - monthly consumption per period (stacked), for each cycle;
-- the estimated monthly cost of each plan, side by side;
+- the estimated monthly cost of each plan, side by side (indexed plans included);
 - the monthly peak 15-minute power;
 - the last 30 days per period.
 

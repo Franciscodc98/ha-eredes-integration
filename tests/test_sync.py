@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from functools import partial
 from typing import TYPE_CHECKING, Any
 
@@ -34,13 +34,14 @@ from custom_components.eredes.eredes_api import (
 from custom_components.eredes.eredes_api.client import LISBON
 from custom_components.eredes.series import (
     cost_statistic_id,
+    market_statistic_id,
     period_statistic_id,
     power_statistic_id,
 )
 from custom_components.eredes.sync import statistic_id, statistic_metadata
 from custom_components.eredes.tariffs import Cycle, Period
 
-from .conftest import CPE, TOKEN, FakePortal
+from .conftest import CPE, TOKEN, FakeOmie, FakePortal
 
 if TYPE_CHECKING:
     from freezegun.api import FrozenDateTimeFactory
@@ -639,3 +640,92 @@ async def test_plan_cost_series_follows_sync_and_plan_changes(
     hass.config_entries.async_remove_subentry(entry, plan_id)
     await hass.async_block_till_done()
     assert await _rows(hass, cost_id) == []
+
+
+# --- OMIE market series and indexed plans (docs/adr/0007) ---------------------
+
+
+async def test_sync_values_consumption_at_omie_price(
+    hass: HomeAssistant, omie: FakeOmie
+) -> None:
+    """The market series is kWh x OMIE price (here a flat 0.1 €/kWh)."""
+    response = await _sync(hass, history_days=10)
+
+    market = await _rows(hass, market_statistic_id(CPE))
+    assert response["market_days_fetched"] == len(omie.requested) > 0
+    assert response["market_prices_missing_from"] is None
+    assert market[-1]["sum"] == pytest.approx(response["final_sum_kwh"] * 0.1)
+
+
+async def test_omie_prices_are_cached_between_syncs(
+    hass: HomeAssistant, omie: FakeOmie, mock_client: FakePortal, freezer: Any
+) -> None:
+    """A later sync only downloads days it has not seen."""
+    await _sync(hass, history_days=10)
+    seen = set(omie.requested)
+    mock_client.published_until = datetime(2026, 3, 11, 0, 0, tzinfo=UTC)
+    freezer.move_to(NOW + timedelta(days=2))
+
+    later = await _sync(hass)
+
+    assert later["market_days_fetched"] == len(set(omie.requested) - seen) > 0
+
+
+async def test_omie_outage_does_not_fail_the_sync_and_is_caught_up(
+    hass: HomeAssistant, omie: FakeOmie
+) -> None:
+    """Energy is imported anyway; the market series resumes on the next sync."""
+    omie.fail_from = date(2026, 3, 5)
+
+    first = await _sync(hass, history_days=10)
+
+    market = await _rows(hass, market_statistic_id(CPE))
+    assert first["hours_written"] > 0
+    assert first["market_prices_missing_from"] == "2026-03-05"
+    assert datetime.fromtimestamp(market[-1]["start"], tz=UTC) < datetime(
+        2026, 3, 5, tzinfo=UTC
+    )
+
+    omie.fail_from = None
+    second = await _sync(hass, history_days=10)
+
+    market = await _rows(hass, market_statistic_id(CPE))
+    assert second["market_prices_missing_from"] is None
+    assert market[-1]["sum"] == pytest.approx(first["final_sum_kwh"] * 0.1)
+
+
+async def test_indexed_plan_cost(hass: HomeAssistant, entry: MockConfigEntry) -> None:
+    """An indexed plan prices the market value through K1, losses, K2 and TAR."""
+    hass.config_entries.async_update_entry(entry, options=NO_TAXES)
+    hass.config_entries.async_add_subentry(
+        entry,
+        ConfigSubentry(
+            data={
+                "option": "simple",
+                "cycle": "daily",
+                "pricing": "indexed",
+                "power_per_day": 0.4,
+                "energy_discount_percent": 0,
+                "k1": 1.1,
+                "k2": 0.02,
+                "losses_percent": 15,
+                "tar_simple": 0.05,
+            },
+            subentry_type="plan",
+            title="Indexed",
+            unique_id=None,
+        ),
+    )
+    await hass.async_block_till_done()
+    (plan_id,) = entry.subentries
+
+    response = await _sync(hass, history_days=10)
+
+    kwh = response["final_sum_kwh"]
+    days = {
+        datetime.fromtimestamp(row["start"], tz=UTC).astimezone(LISBON).date()
+        for row in await _rows(hass)
+    }
+    expected = kwh * 0.1 * 1.15 * 1.1 + kwh * (0.02 + 0.05) + len(days) * 0.4
+    cost = await _rows(hass, cost_statistic_id(CPE, plan_id))
+    assert cost[-1]["sum"] == pytest.approx(expected)

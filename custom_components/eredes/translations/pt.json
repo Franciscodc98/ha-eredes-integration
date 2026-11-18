@@ -162,34 +162,38 @@
       "step": {
         "user": {
           "title": "Plano tarifário",
-          "description": "Uma oferta para estimar custos: o seu contrato atual, a tarifa regulada ou a oferta de outro comercializador. Preços sem IVA.",
+          "description": "Uma oferta para estimar custos: o seu contrato atual, a tarifa regulada ou a oferta de outro comercializador. Preços sem IVA; os preços da energia são pedidos no passo seguinte.",
           "data": {
             "name": "Nome",
             "option": "Opção tarifária",
             "cycle": "Ciclo",
             "power_per_day": "Preço da potência por dia",
-            "energy_discount_percent": "Desconto na energia"
+            "energy_discount_percent": "Desconto na energia",
+            "pricing": "Preço da energia"
           },
           "data_description": {
             "cycle": "Só para bi e tri-horário. Na dúvida, crie um plano por ciclo e compare.",
-            "power_per_day": "Para a sua potência contratada, sem IVA.",
-            "energy_discount_percent": "Percentagem de desconto só no preço da energia (não na potência), antes do IVA. Deixe 0 se não tiver."
+            "power_per_day": "Para a sua potência contratada, sem IVA. Numa oferta indexada, o termo fixo do comercializador mais a TAR de potência.",
+            "energy_discount_percent": "Percentagem de desconto só no preço da energia (não na potência), antes do IVA. Deixe 0 se não tiver.",
+            "pricing": "Preços fixos, ou indexados ao preço do mercado OMIE de cada 15 minutos."
           }
         },
         "reconfigure": {
           "title": "Plano tarifário",
-          "description": "Uma oferta para estimar custos: o seu contrato atual, a tarifa regulada ou a oferta de outro comercializador. Preços sem IVA.",
+          "description": "Uma oferta para estimar custos: o seu contrato atual, a tarifa regulada ou a oferta de outro comercializador. Preços sem IVA; os preços da energia são pedidos no passo seguinte.",
           "data": {
             "name": "Nome",
             "option": "Opção tarifária",
             "cycle": "Ciclo",
             "power_per_day": "Preço da potência por dia",
-            "energy_discount_percent": "Desconto na energia"
+            "energy_discount_percent": "Desconto na energia",
+            "pricing": "Preço da energia"
           },
           "data_description": {
             "cycle": "Só para bi e tri-horário. Na dúvida, crie um plano por ciclo e compare.",
-            "power_per_day": "Para a sua potência contratada, sem IVA.",
-            "energy_discount_percent": "Percentagem de desconto só no preço da energia (não na potência), antes do IVA. Deixe 0 se não tiver."
+            "power_per_day": "Para a sua potência contratada, sem IVA. Numa oferta indexada, o termo fixo do comercializador mais a TAR de potência.",
+            "energy_discount_percent": "Percentagem de desconto só no preço da energia (não na potência), antes do IVA. Deixe 0 se não tiver.",
+            "pricing": "Preços fixos, ou indexados ao preço do mercado OMIE de cada 15 minutos."
           }
         },
         "prices": {
@@ -201,6 +205,23 @@
             "price_fora_vazio": "Fora de vazio",
             "price_cheias": "Cheias",
             "price_ponta": "Ponta"
+          }
+        },
+        "indexed_prices": {
+          "title": "Preço indexado da energia",
+          "description": "Por cada 15 minutos: preço OMIE x (1 + perdas) x K1 + K2 + TAR de energia. K1, K2 e perdas estão na ficha normalizada da oferta; a TAR de energia é a da ERSE para o ano em curso. Valores sem IVA.",
+          "data": {
+            "k1": "K1 (multiplicador)",
+            "k2": "K2 (€/kWh)",
+            "losses_percent": "Perdas na rede",
+            "tar_simple": "TAR de energia",
+            "tar_vazio": "TAR de energia, vazio",
+            "tar_fora_vazio": "TAR de energia, fora de vazio",
+            "tar_cheias": "TAR de energia, cheias",
+            "tar_ponta": "TAR de energia, ponta"
+          },
+          "data_description": {
+            "losses_percent": "Ajustamento médio para perdas, p. ex. 16,4 % publicado pela EDP para 2026."
           }
         }
       }
@@ -218,6 +239,12 @@
       "options": {
         "daily": "Ciclo diário (mesmas horas todos os dias)",
         "weekly": "Ciclo semanal (fins de semana quase todos em vazio)"
+      }
+    },
+    "pricing": {
+      "options": {
+        "fixed": "Preços fixos",
+        "indexed": "Indexado ao OMIE (preço de mercado)"
       }
     }
   }

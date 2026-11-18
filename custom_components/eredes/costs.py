@@ -31,9 +31,15 @@ from .const import (
     OPT_VAT_REDUCED,
     PLAN_CYCLE,
     PLAN_DISCOUNT,
+    PLAN_K1,
+    PLAN_K2,
+    PLAN_LOSSES,
     PLAN_OPTION,
     PLAN_POWER_PER_DAY,
     PLAN_PRICE_KEYS,
+    PLAN_PRICING,
+    PLAN_TAR_KEYS,
+    PRICING_INDEXED,
     SUBENTRY_PLAN,
 )
 from .series import (
@@ -42,12 +48,14 @@ from .series import (
     cost_statistic_id,
     cost_statistic_metadata,
     cost_statistic_prefix,
+    market_statistic_id,
     period_statistic_id,
     statistic_id,
 )
 from .tariffs import (
     Cycle,
     HourEnergy,
+    Indexation,
     Period,
     Plan,
     TariffOption,
@@ -91,16 +99,25 @@ def taxes_from_options(options: dict[str, Any]) -> Taxes:
 
 def plan_from_data(data: dict[str, Any]) -> Plan:
     """Build a plan from a subentry's data."""
+    indexed = data.get(PLAN_PRICING) == PRICING_INDEXED
+    keys = PLAN_TAR_KEYS if indexed else PLAN_PRICE_KEYS
     return Plan(
         option=TariffOption(data[PLAN_OPTION]),
         cycle=Cycle(data.get(PLAN_CYCLE) or Cycle.DAILY),
         power_per_day=float(data[PLAN_POWER_PER_DAY]),
         energy={
             key: float(data[field])
-            for key, field in PLAN_PRICE_KEYS.items()
+            for key, field in keys.items()
             if data.get(field) is not None
         },
         energy_discount=float(data.get(PLAN_DISCOUNT) or 0) / 100,
+        indexed=Indexation(
+            k1=float(data[PLAN_K1]),
+            k2=float(data[PLAN_K2]),
+            losses=float(data[PLAN_LOSSES]) / 100,
+        )
+        if indexed
+        else None,
     )
 
 
@@ -113,6 +130,10 @@ def build_hours(rows: dict[str, list[dict[str, Any]]], cpe: str) -> list[HourEne
             start=datetime.fromtimestamp(start, tz=UTC),
             total=float(row.get("state") or 0.0),
         )
+    for row in rows.get(market_statistic_id(cpe), []):
+        hour = hours.get(float(row["start"]))
+        if hour is not None:
+            hour.market = float(row.get("state") or 0.0)
     for cycle in Cycle:
         for period in Period:
             for row in rows.get(period_statistic_id(cpe, cycle, period), []):
@@ -173,7 +194,7 @@ async def async_recompute_costs(hass: HomeAssistant, entry: ConfigEntry) -> int:
 
     written = 0
     if plans:
-        energy_ids = {statistic_id(cpe)} | {
+        energy_ids = {statistic_id(cpe), market_statistic_id(cpe)} | {
             period_statistic_id(cpe, cycle, period)
             for cycle in Cycle
             for period in Period

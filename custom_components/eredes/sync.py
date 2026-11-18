@@ -31,13 +31,17 @@ from .eredes_api import (
     ERedesHTTPError,
     ERedesUnsuccessfulResponseError,
 )
+from .market import MarketPrices, async_market_prices
+from .omie import market_days
 from .planning import (
+    HOUR,
     BlockOutcome,
     BlockSequence,
     BlockSequenceError,
     ImportPlan,
     LastStatistic,
     aggregate_hours,
+    aggregate_market_hours,
     aggregate_period_hours,
     aggregate_power_hours,
     build_import_plan,
@@ -52,6 +56,8 @@ from .planning import (
 from .series import (
     async_last_statistic,
     async_recorder_barrier,
+    market_statistic_id,
+    market_statistic_metadata,
     period_statistic_id,
     period_statistic_metadata,
     power_statistic_id,
@@ -62,7 +68,7 @@ from .series import (
 from .tariffs import Cycle, Period
 
 if TYPE_CHECKING:
-    from datetime import datetime
+    from datetime import date, datetime
 
     from homeassistant.config_entries import ConfigEntry
     from homeassistant.core import HomeAssistant
@@ -99,6 +105,8 @@ class SyncResult:
     last_reading: datetime | None
     plan: ImportPlan
     derived_rows_written: int = 0
+    market_days_fetched: int = 0
+    market_prices_missing_from: date | None = None
     cost_rows_written: int = 0
 
     @property
@@ -139,6 +147,8 @@ class SyncResult:
             "reopened_last_hour": plan.reopened_last_hour,
             "derived_rows_written": self.derived_rows_written,
             "cost_rows_written": self.cost_rows_written,
+            "market_days_fetched": self.market_days_fetched,
+            "market_prices_missing_from": iso(self.market_prices_missing_from),
         }
 
 
@@ -251,6 +261,100 @@ def _write_derived_series(
     return written
 
 
+async def _async_fetch_blocks(
+    client: ERedesClient,
+    cpe: str,
+    blocks: list[tuple[datetime, datetime]],
+    stat_id: str,
+) -> list[ConsumptionReading]:
+    """Fetch every block in order; raise on anything the policy rejects.
+
+    See ``BlockSequence`` for the one tolerated case (the leading edge).
+    """
+    readings: list[ConsumptionReading] = []
+    sequence = BlockSequence()
+    for index, (block_start, block_end) in enumerate(blocks):
+        if index:
+            await asyncio.sleep(REQUEST_PAUSE_SECONDS)
+        try:
+            consumption = await client.get_consumption(cpe, block_start, block_end)
+        except ERedesUnsuccessfulResponseError:
+            outcome = BlockOutcome.UNSUCCESSFUL
+        except ERedesError as err:
+            _LOGGER.debug(
+                "Sync %s aborted at block %d/%d: %s",
+                stat_id,
+                index + 1,
+                len(blocks),
+                type(err).__name__,
+            )
+            raise _translate_api_error(err, at_first_block=index == 0) from None
+        else:
+            readings.extend(consumption.readings)
+            outcome = BlockOutcome.DATA if consumption.readings else BlockOutcome.EMPTY
+        _LOGGER.debug(
+            "Sync %s: block %d/%d %s -> %s: %s",
+            stat_id,
+            index + 1,
+            len(blocks),
+            block_start.isoformat(),
+            block_end.isoformat(),
+            outcome.value,
+        )
+        try:
+            sequence.record(outcome)
+        except BlockSequenceError as err:
+            raise HomeAssistantError(
+                translation_domain=DOMAIN,
+                translation_key=err.reason.value,
+                translation_placeholders={"block": str(err.block_index + 1)},
+            ) from None
+
+    if not sequence.seen_data and sequence.seen_unsuccessful:
+        raise HomeAssistantError(
+            translation_domain=DOMAIN, translation_key="no_successful_response"
+        )
+    return readings
+
+
+async def _async_write_market_series(
+    hass: HomeAssistant,
+    cpe: str,
+    readings: list[ConsumptionReading],
+    cutoff: datetime | None,
+    market_last: LastStatistic | None,
+) -> tuple[int, MarketPrices]:
+    """Value new readings at the OMIE price and queue the market series.
+
+    OMIE problems never fail the sync: the energy series are already queued,
+    and the market series simply stops where prices stop, to be continued by
+    a later sync (docs/adr/0007).
+    """
+    after = market_last.start + HOUR if market_last is not None else None
+    pending = [
+        r
+        for r in readings
+        if (after is None or r.timestamp >= after)
+        and cutoff is not None
+        and r.timestamp < cutoff + HOUR
+    ]
+    if not pending:
+        return 0, MarketPrices()
+    market = await async_market_prices(
+        hass, market_days(pending[0].timestamp, pending[-1].timestamp)
+    )
+    buckets, priced_until = aggregate_market_hours(pending, market.prices)
+    limit = priced_until if priced_until is None or priced_until < cutoff else cutoff
+    rows = series_rows(buckets, market_last, limit)
+    if rows:
+        async_add_external_statistics(
+            hass,
+            market_statistic_metadata(cpe, hass.config.currency),
+            [StatisticData(start=r.start, state=r.state, sum=r.sum) for r in rows],
+        )
+    return len(rows), market
+
+
 async def async_sync(
     hass: HomeAssistant,
     entry: ConfigEntry,
@@ -283,9 +387,10 @@ async def async_sync(
 
         stat_id = statistic_id(cpe)
         last, periods_last, power_last = await _async_series_lasts(hass, cpe)
+        market_last = await async_last_statistic(hass, market_statistic_id(cpe))
         # A series added by an upgrade has no rows yet: widen the window so it
         # is backfilled; series already ahead simply skip what they have.
-        resume = resume_point([last, *periods_last.values(), power_last])
+        resume = resume_point([last, *periods_last.values(), power_last, market_last])
         window_start, window_end = plan_window(dt_util.utcnow(), resume, history_days)
         blocks = split_into_blocks(window_start, window_end)
         _LOGGER.debug(
@@ -298,52 +403,7 @@ async def async_sync(
             dry_run,
         )
 
-        readings: list[ConsumptionReading] = []
-        sequence = BlockSequence()
-        for index, (block_start, block_end) in enumerate(blocks):
-            if index:
-                await asyncio.sleep(REQUEST_PAUSE_SECONDS)
-            try:
-                consumption = await client.get_consumption(cpe, block_start, block_end)
-            except ERedesUnsuccessfulResponseError:
-                outcome = BlockOutcome.UNSUCCESSFUL
-            except ERedesError as err:
-                _LOGGER.debug(
-                    "Sync %s aborted at block %d/%d: %s",
-                    stat_id,
-                    index + 1,
-                    len(blocks),
-                    type(err).__name__,
-                )
-                raise _translate_api_error(err, at_first_block=index == 0) from None
-            else:
-                readings.extend(consumption.readings)
-                outcome = (
-                    BlockOutcome.DATA if consumption.readings else BlockOutcome.EMPTY
-                )
-            _LOGGER.debug(
-                "Sync %s: block %d/%d %s -> %s: %s",
-                stat_id,
-                index + 1,
-                len(blocks),
-                block_start.isoformat(),
-                block_end.isoformat(),
-                outcome.value,
-            )
-            try:
-                sequence.record(outcome)
-            except BlockSequenceError as err:
-                raise HomeAssistantError(
-                    translation_domain=DOMAIN,
-                    translation_key=err.reason.value,
-                    translation_placeholders={"block": str(err.block_index + 1)},
-                ) from None
-
-        if not sequence.seen_data and sequence.seen_unsuccessful:
-            raise HomeAssistantError(
-                translation_domain=DOMAIN, translation_key="no_successful_response"
-            )
-
+        readings = await _async_fetch_blocks(client, cpe, blocks, stat_id)
         unique, duplicates = dedupe_readings(readings)
         plan = build_import_plan(aggregate_hours(unique), last)
         result = SyncResult(
@@ -381,14 +441,19 @@ async def async_sync(
                 for row in plan.rows
             ],
         )
+        cutoff = import_cutoff(plan, last)
         derived = _write_derived_series(
             hass,
             cpe,
             readings=unique,
-            cutoff=import_cutoff(plan, last),
+            cutoff=cutoff,
             periods_last=periods_last,
             power_last=power_last,
         )
+        market_rows, market = await _async_write_market_series(
+            hass, cpe, unique, cutoff, market_last
+        )
+        derived += market_rows
         # The calls above only queue the imports; wait for the recorder so the
         # next sync reads this one's last hours and appends nothing twice.
         await async_recorder_barrier(hass)
@@ -403,4 +468,10 @@ async def async_sync(
             derived,
             costs,
         )
-        return replace(result, derived_rows_written=derived, cost_rows_written=costs)
+        return replace(
+            result,
+            derived_rows_written=derived,
+            cost_rows_written=costs,
+            market_days_fetched=market.days_fetched,
+            market_prices_missing_from=market.first_missing_day,
+        )

@@ -131,6 +131,19 @@ def classify(moment: datetime, cycle: Cycle) -> Period:
 
 
 @dataclass(frozen=True)
+class Indexation:
+    """Market-indexed energy (docs/adr/0007).
+
+    Per 15-minute interval: ``OMIE x (1 + losses) x k1 + k2 + TAR energy``.
+    The plan's ``energy`` prices then hold the TAR energy component per period.
+    """
+
+    k1: float = 1.0  # multiplier on the loss-adjusted market price
+    k2: float = 0.0  # € per kWh
+    losses: float = 0.0  # fraction, e.g. 0.164 for 16.4 %
+
+
+@dataclass(frozen=True)
 class Plan:
     """A tariff offer to estimate. Prices exclude VAT; € per kWh / per day."""
 
@@ -139,6 +152,7 @@ class Plan:
     power_per_day: float
     energy: Mapping[str, float]  # "simple" | "vazio" | "fora_vazio" | period
     energy_discount: float = 0.0  # fraction, e.g. 0.15 for 15 %
+    indexed: Indexation | None = None
 
     def price(self, period: Period) -> float:
         """Return the pre-discount energy price of ``period`` under this plan."""
@@ -171,6 +185,7 @@ class HourEnergy:
     start: datetime  # aware UTC, top of the hour
     total: float
     periods: dict[Cycle, dict[Period, float]] = field(default_factory=dict)
+    market: float | None = None  # sum of kWh x OMIE price (€), if known
 
 
 @dataclass(frozen=True)
@@ -196,12 +211,21 @@ def _local_day(moment: datetime) -> date:
 
 
 def _energy_net(hour: HourEnergy, plan: Plan) -> float:
-    """Energy cost of one hour before VAT, after the discount."""
+    """Energy cost of one hour before VAT, after the discount.
+
+    For an indexed plan the per-period prices are the TAR energy component,
+    and the market part is added from the hour's OMIE-valued consumption.
+    The formula is linear in consumption, so summing per hour is exact.
+    """
     if plan.option is TariffOption.SIMPLE:
         gross = hour.total * plan.energy["simple"]
     else:
         split = hour.periods.get(plan.cycle, {})
         gross = sum(kwh * plan.price(period) for period, kwh in split.items())
+    if plan.indexed is not None:
+        index = plan.indexed
+        gross += (hour.market or 0.0) * (1 + index.losses) * index.k1
+        gross += hour.total * index.k2
     return gross * (1 - plan.energy_discount)
 
 
@@ -226,6 +250,9 @@ def estimate_costs(
     """
     by_month: dict[date, list[HourEnergy]] = {}
     for hour in sorted(hours, key=lambda h: h.start):
+        if plan.indexed is not None and hour.market is None:
+            # No market price yet: an indexed plan cannot be priced there.
+            continue
         day = _local_day(hour.start)
         by_month.setdefault(day.replace(day=1), []).append(hour)
 
