@@ -162,34 +162,38 @@
       "step": {
         "user": {
           "title": "Tariff plan",
-          "description": "A tariff offer to estimate costs for: your current contract, the regulated tariff, or another supplier's offer. Prices exclude VAT.",
+          "description": "A tariff offer to estimate costs for: your current contract, the regulated tariff, or another supplier's offer. Prices exclude VAT; the energy prices are asked on the next step.",
           "data": {
             "name": "Name",
             "option": "Tariff option",
             "cycle": "Cycle",
             "power_per_day": "Power charge per day",
-            "energy_discount_percent": "Discount on energy"
+            "energy_discount_percent": "Discount on energy",
+            "pricing": "Energy pricing"
           },
           "data_description": {
             "cycle": "Only for bi- and tri-hourly. Not sure? Add one plan per cycle and compare.",
-            "power_per_day": "For your contracted power, without VAT.",
-            "energy_discount_percent": "Percentage off the energy price only (not power), before VAT. Leave 0 if none."
+            "power_per_day": "For your contracted power, without VAT. For an indexed offer, the supplier's daily fee plus the TAR power charge.",
+            "energy_discount_percent": "Percentage off the energy price only (not power), before VAT. Leave 0 if none.",
+            "pricing": "Fixed prices, or indexed to the OMIE day-ahead market price of every 15 minutes."
           }
         },
         "reconfigure": {
           "title": "Tariff plan",
-          "description": "A tariff offer to estimate costs for: your current contract, the regulated tariff, or another supplier's offer. Prices exclude VAT.",
+          "description": "A tariff offer to estimate costs for: your current contract, the regulated tariff, or another supplier's offer. Prices exclude VAT; the energy prices are asked on the next step.",
           "data": {
             "name": "Name",
             "option": "Tariff option",
             "cycle": "Cycle",
             "power_per_day": "Power charge per day",
-            "energy_discount_percent": "Discount on energy"
+            "energy_discount_percent": "Discount on energy",
+            "pricing": "Energy pricing"
           },
           "data_description": {
             "cycle": "Only for bi- and tri-hourly. Not sure? Add one plan per cycle and compare.",
-            "power_per_day": "For your contracted power, without VAT.",
-            "energy_discount_percent": "Percentage off the energy price only (not power), before VAT. Leave 0 if none."
+            "power_per_day": "For your contracted power, without VAT. For an indexed offer, the supplier's daily fee plus the TAR power charge.",
+            "energy_discount_percent": "Percentage off the energy price only (not power), before VAT. Leave 0 if none.",
+            "pricing": "Fixed prices, or indexed to the OMIE day-ahead market price of every 15 minutes."
           }
         },
         "prices": {
@@ -201,6 +205,23 @@
             "price_fora_vazio": "Fora de vazio (outside off-peak)",
             "price_cheias": "Cheias (shoulder)",
             "price_ponta": "Ponta (peak)"
+          }
+        },
+        "indexed_prices": {
+          "title": "Indexed energy price",
+          "description": "Per 15 minutes: OMIE price x (1 + losses) x K1 + K2 + TAR energy. Take K1, K2 and losses from the offer's standard sheet (ficha normalizada) and TAR energy from ERSE for the current year. Values without VAT.",
+          "data": {
+            "k1": "K1 (multiplier)",
+            "k2": "K2 (€/kWh)",
+            "losses_percent": "Network losses",
+            "tar_simple": "TAR energy",
+            "tar_vazio": "TAR energy, vazio",
+            "tar_fora_vazio": "TAR energy, fora de vazio",
+            "tar_cheias": "TAR energy, cheias",
+            "tar_ponta": "TAR energy, ponta"
+          },
+          "data_description": {
+            "losses_percent": "Average loss adjustment, e.g. 16.4 % as published by EDP for 2026."
           }
         }
       }
@@ -218,6 +239,12 @@
       "options": {
         "daily": "Daily cycle (same hours every day)",
         "weekly": "Weekly cycle (weekends mostly off-peak)"
+      }
+    },
+    "pricing": {
+      "options": {
+        "fixed": "Fixed prices",
+        "indexed": "Indexed to OMIE (market price)"
       }
     }
   }

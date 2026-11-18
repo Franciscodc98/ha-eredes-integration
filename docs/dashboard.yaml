@@ -54,6 +54,8 @@ cards:
         name: Bi-horário diário
       - entity: eredes:cost_xxxxxxxx_<plan id>
         name: Tri-horário semanal
+      - entity: eredes:cost_xxxxxxxx_<plan id>
+        name: Indexado OMIE
 
   - type: statistics-graph
     title: Potência máxima mensal (média de 15 min)
@@ -80,3 +82,13 @@ cards:
         name: Cheias
       - entity: eredes:energy_xxxxxxxx_daily_ponta
         name: Ponta
+
+  - type: statistics-graph
+    title: Valor do consumo a preço OMIE (mensal, sem margens nem taxas)
+    chart_type: bar
+    period: month
+    days_to_show: 365
+    stat_types: [change]
+    entities:
+      - entity: eredes:market_xxxxxxxx
+        name: Consumo x OMIE

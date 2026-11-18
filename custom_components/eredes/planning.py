@@ -452,3 +452,34 @@ def power_rows(
         for row in rows
         if (last_start is None or row.start > last_start) and row.start <= cutoff
     ]
+
+
+def aggregate_market_hours(
+    readings: Iterable[ConsumptionReading], prices: dict[datetime, float]
+) -> tuple[list[HourBucket], datetime | None]:
+    """Value each reading at its OMIE price and roll up per UTC hour.
+
+    Returns the hourly buckets (``kwh`` holds euros: consumption x market
+    price, before losses or margins) and the newest hour that is fully priced
+    and preceded only by priced hours — the market series must not skip a
+    stretch it could only fill later. ``None`` if the first hour is unpriced.
+    """
+    euros: dict[datetime, float] = {}
+    counts: dict[datetime, int] = {}
+    priced_until: datetime | None = None
+    for reading in sorted(readings, key=lambda r: r.timestamp):
+        hour = _hour_of(reading)
+        price = prices.get(reading.timestamp.astimezone(UTC))
+        if price is None:
+            # Everything before this reading's hour is complete.
+            first = min(euros, default=None)
+            priced_until = hour - HOUR if first is not None and hour > first else None
+            break
+        euros[hour] = euros.get(hour, 0.0) + reading.value_kwh * price
+        counts[hour] = counts.get(hour, 0) + 1
+    else:
+        priced_until = max(euros, default=None)
+    buckets = [HourBucket(hour, euros[hour], counts[hour]) for hour in sorted(euros)]
+    if priced_until is not None:
+        buckets = [b for b in buckets if b.start <= priced_until]
+    return buckets, priced_until

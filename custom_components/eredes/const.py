@@ -56,3 +56,19 @@ OPT_IEC_PER_KWH: Final = "iec_per_kwh"
 OPT_DGEG_PER_MONTH: Final = "dgeg_per_month"
 OPT_CAV_PER_MONTH: Final = "cav_per_month"
 OPT_VAT_CAV: Final = "vat_cav_percent"
+
+# Market-indexed plans (docs/adr/0007)
+PLAN_PRICING: Final = "pricing"
+PRICING_FIXED: Final = "fixed"
+PRICING_INDEXED: Final = "indexed"
+PLAN_K1: Final = "k1"
+PLAN_K2: Final = "k2"
+PLAN_LOSSES: Final = "losses_percent"
+# For indexed plans the per-period energy fields hold the TAR energy component.
+PLAN_TAR_KEYS: Final = {
+    "simple": "tar_simple",
+    "vazio": "tar_vazio",
+    "fora_vazio": "tar_fora_vazio",
+    "cheias": "tar_cheias",
+    "ponta": "tar_ponta",
+}

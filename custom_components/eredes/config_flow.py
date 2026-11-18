@@ -56,9 +56,16 @@ from .const import (
     OPT_VAT_REDUCED,
     PLAN_CYCLE,
     PLAN_DISCOUNT,
+    PLAN_K1,
+    PLAN_K2,
+    PLAN_LOSSES,
     PLAN_OPTION,
     PLAN_POWER_PER_DAY,
     PLAN_PRICE_KEYS,
+    PLAN_PRICING,
+    PLAN_TAR_KEYS,
+    PRICING_FIXED,
+    PRICING_INDEXED,
     SUBENTRY_PLAN,
     normalize_cpe,
 )
@@ -90,15 +97,12 @@ PLAN_NAME = "name"
 def _number(
     minimum: float, maximum: float, step: float | str, unit: str | None = None
 ) -> NumberSelector:
-    return NumberSelector(
-        NumberSelectorConfig(
-            min=minimum,
-            max=maximum,
-            step=step,
-            mode=NumberSelectorMode.BOX,
-            unit_of_measurement=unit,
-        )
+    config = NumberSelectorConfig(
+        min=minimum, max=maximum, step=step, mode=NumberSelectorMode.BOX
     )
+    if unit is not None:
+        config["unit_of_measurement"] = unit
+    return NumberSelector(config)
 
 
 PRICE_SELECTOR = _number(0, 10, "any", "€/kWh")
@@ -120,6 +124,13 @@ PLAN_STRUCTURE_SCHEMA = vol.Schema(
                 mode=SelectSelectorMode.LIST,
             )
         ),
+        vol.Required(PLAN_PRICING, default=PRICING_FIXED): SelectSelector(
+            SelectSelectorConfig(
+                options=[PRICING_FIXED, PRICING_INDEXED],
+                translation_key=PLAN_PRICING,
+                mode=SelectSelectorMode.LIST,
+            )
+        ),
         vol.Required(PLAN_POWER_PER_DAY): _number(0, 10, "any", "€/day"),
         vol.Required(PLAN_DISCOUNT, default=0): _number(0, 100, 0.01, "%"),
     }
@@ -138,6 +149,21 @@ PRICE_FIELDS: dict[TariffOption, tuple[str, ...]] = {
         PLAN_PRICE_KEYS["ponta"],
     ),
 }
+
+# Indexed plans: the formula's coefficients, then TAR energy per period.
+INDEXED_FIELDS: tuple[str, ...] = (PLAN_K1, PLAN_K2, PLAN_LOSSES)
+INDEXED_SELECTORS = {
+    PLAN_K1: _number(0, 10, "any"),
+    PLAN_K2: _number(-1, 10, "any", "€/kWh"),
+    PLAN_LOSSES: _number(0, 100, "any", "%"),
+}
+
+
+def _tar_fields(option: TariffOption) -> tuple[str, ...]:
+    """The TAR energy fields of an indexed plan, mirroring PRICE_FIELDS."""
+    by_price = {price: key for key, price in PLAN_PRICE_KEYS.items()}
+    return tuple(PLAN_TAR_KEYS[by_price[field]] for field in PRICE_FIELDS[option])
+
 
 _DEFAULT_TAXES = Taxes()
 TAX_DEFAULTS: dict[str, float] = {
@@ -163,6 +189,10 @@ TAXES_SCHEMA = vol.Schema(
         vol.Required(OPT_VAT_CAV): _number(0, 100, 0.1, "%"),
     }
 )
+
+
+# Every field that holds a price or coefficient, dropped on re-entry.
+ALL_PRICE_FIELDS = {*PLAN_PRICE_KEYS.values(), *PLAN_TAR_KEYS.values(), *INDEXED_FIELDS}
 
 
 class ERedesConfigFlow(ConfigFlow, domain=DOMAIN):
@@ -313,17 +343,26 @@ class PlanSubentryFlow(ConfigSubentryFlow):
             ),
         )
 
+    async def async_step_indexed_prices(
+        self, user_input: dict[str, Any] | None = None
+    ) -> SubentryFlowResult:
+        """Coefficients and TAR energy of a market-indexed plan."""
+        return await self.async_step_prices(user_input)
+
     async def async_step_prices(
         self, user_input: dict[str, Any] | None = None
     ) -> SubentryFlowResult:
         """Energy prices for the periods the chosen option distinguishes."""
         option = TariffOption(self._data[PLAN_OPTION])
-        fields = PRICE_FIELDS[option]
+        indexed = self._data.get(PLAN_PRICING) == PRICING_INDEXED
+        fields = (
+            (*INDEXED_FIELDS, *_tar_fields(option)) if indexed else PRICE_FIELDS[option]
+        )
         if user_input is not None:
             data = {
                 key: value
                 for key, value in self._data.items()
-                if key != PLAN_NAME and key not in PLAN_PRICE_KEYS.values()
+                if key != PLAN_NAME and key not in ALL_PRICE_FIELDS
             }
             data.update({field: user_input[field] for field in fields})
             title = str(self._data[PLAN_NAME]).strip() or option.value
@@ -335,8 +374,13 @@ class PlanSubentryFlow(ConfigSubentryFlow):
                 title=title,
                 data=data,
             )
-        schema = vol.Schema({vol.Required(field): PRICE_SELECTOR for field in fields})
+        schema = vol.Schema(
+            {
+                vol.Required(field): INDEXED_SELECTORS.get(field, PRICE_SELECTOR)
+                for field in fields
+            }
+        )
         return self.async_show_form(
-            step_id="prices",
+            step_id="indexed_prices" if indexed else "prices",
             data_schema=self.add_suggested_values_to_schema(schema, self._data),
         )

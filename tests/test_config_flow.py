@@ -218,7 +218,7 @@ async def _add_plan(
         result["flow_id"], structure
     )
     assert result["type"] is FlowResultType.FORM
-    assert result["step_id"] == "prices"
+    assert result["step_id"] in {"prices", "indexed_prices"}
     assert {str(key) for key in result["data_schema"].schema} == set(prices)
     result = await hass.config_entries.subentries.async_configure(
         result["flow_id"], prices
@@ -251,6 +251,7 @@ async def test_add_simple_plan(
     assert dict(subentry.data) == {
         "option": "simple",
         "cycle": "daily",
+        "pricing": "fixed",
         "power_per_day": 0.5,
         "energy_discount_percent": 10,
         "price_simple": 0.16,
@@ -323,3 +324,35 @@ async def test_reconfigure_plan_switching_option_drops_old_prices(
     assert subentry.title == "Offer bi"
     assert "price_simple" not in subentry.data
     assert subentry.data["price_fora_vazio"] == 0.2
+
+
+async def test_add_indexed_tri_hourly_plan(
+    hass: HomeAssistant, loaded_entry: MockConfigEntry
+) -> None:
+    """An indexed plan asks K1, K2, losses and the TAR energy per period."""
+    result = await _add_plan(
+        hass,
+        loaded_entry,
+        {
+            "name": "Indexed tri",
+            "option": "tri_hourly",
+            "cycle": "daily",
+            "pricing": "indexed",
+            "power_per_day": 0.4,
+            "energy_discount_percent": 0,
+        },
+        {
+            "k1": 1.08,
+            "k2": 0.0185,
+            "losses_percent": 16.4,
+            "tar_vazio": 0.01,
+            "tar_cheias": 0.04,
+            "tar_ponta": 0.24,
+        },
+    )
+
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    (subentry,) = loaded_entry.subentries.values()
+    assert subentry.data["pricing"] == "indexed"
+    assert subentry.data["k1"] == 1.08
+    assert "price_vazio" not in subentry.data

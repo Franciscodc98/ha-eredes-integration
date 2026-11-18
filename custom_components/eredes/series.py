@@ -7,6 +7,7 @@ All series live under the ``eredes`` source (docs/adr/0002, 0006):
 | ``eredes:energy_<sfx>``                      | Total energy, kWh (unchanged)    |
 | ``eredes:energy_<sfx>_<cycle>_<period>``     | Energy per tariff period, kWh    |
 | ``eredes:power_<sfx>``                       | 15-min average power, kW (max)   |
+| ``eredes:market_<sfx>``                      | Consumption x OMIE price, €      |
 | ``eredes:cost_<sfx>_<plan id>``              | Estimated cost of a plan, €      |
 
 ``<sfx>`` is the last 8 characters of the CPE, lower-cased.
@@ -68,6 +69,25 @@ def period_statistic_id(cpe: str, cycle: Cycle, period: Period) -> str:
 def power_statistic_id(cpe: str) -> str:
     """Return the id of the 15-minute average power series."""
     return f"{DOMAIN}:power_{suffix(cpe).lower()}"
+
+
+def market_statistic_id(cpe: str) -> str:
+    """Return the id of the consumption-at-OMIE-price series (docs/adr/0007)."""
+    return f"{DOMAIN}:market_{suffix(cpe).lower()}"
+
+
+def market_statistic_metadata(cpe: str, currency: str) -> StatisticMetaData:
+    """Return the metadata of the consumption-at-OMIE-price series."""
+    return StatisticMetaData(
+        has_mean=False,
+        has_sum=True,
+        mean_type=StatisticMeanType.NONE,
+        name=f"E-REDES consumption at OMIE price ({suffix(cpe)})",
+        source=DOMAIN,
+        statistic_id=market_statistic_id(cpe),
+        unit_class=None,
+        unit_of_measurement=currency,
+    )
 
 
 def cost_statistic_prefix(cpe: str) -> str:
